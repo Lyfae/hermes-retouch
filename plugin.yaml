@@ -1,0 +1,19 @@
+name: retouch
+version: 0.1.0
+description: >-
+  Mark the parts of any image that need work, leave a note on each, and let Hermes fix only those
+  areas. Every edit is proved to change nothing outside its mark, saved as a new version, and
+  reviewed by you in that mark's thread.
+author: Lyfae
+license: MIT
+homepage: https://github.com/Lyfae/hermes-retouch
+manifest_version: 2
+api_version: 1
+requires_hermes: ">=0.22.7"
+tags: [images, photos, editing, desktop]
+provides_tools:
+  - retouch_get
+  - retouch_edit
+  - retouch_reply
+  - retouch_export
+provides_hooks: []

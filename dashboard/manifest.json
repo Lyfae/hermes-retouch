@@ -1,0 +1,6 @@
+{
+  "name": "retouch",
+  "label": "Retouch",
+  "description": "Backend for the Retouch pane: projects, marks, threads, versions and export.",
+  "api": "plugin_api.py"
+}
