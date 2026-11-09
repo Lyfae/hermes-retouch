@@ -162,6 +162,33 @@ def revert(project_id: str, body: RevertIn) -> dict[str, Any]:
 
 @router.post("/projects/{project_id}/export")
 def export(project_id: str, body: ExportIn) -> dict[str, Any]:
-    path = _call(_ws().export, project_id, version_id=body.version, fmt=body.format, quality=body.quality,
+    path = _call(_ws().export_and_keep, project_id, version_id=body.version, fmt=body.format, quality=body.quality,
                  max_side=body.max_side, strip_gps=body.strip_gps)
     return {"path": str(path), "name": path.name}
+
+
+@router.get("/capabilities")
+def capabilities() -> dict[str, Any]:
+    return {"screenshot": _ws().can_screenshot()}
+
+
+class ScreenshotIn(BaseModel):
+    session_id: Optional[str] = None
+
+
+@router.post("/screenshot")
+def screenshot(body: ScreenshotIn) -> dict[str, Any]:
+    """Opens the OS region picker on the gateway host; the capture becomes a scratch project."""
+    project = _call(_ws().screenshot, session_id=body.session_id)
+    return {"project": project}  # null when the user cancelled the picker
+
+
+@router.post("/projects/{project_id}/keep")
+def keep(project_id: str) -> dict[str, Any]:
+    return _call(_ws().keep, project_id)
+
+
+@router.delete("/projects/{project_id}")
+def discard(project_id: str) -> dict[str, Any]:
+    _call(_ws().discard, project_id)
+    return {"ok": True}

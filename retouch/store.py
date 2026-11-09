@@ -34,7 +34,8 @@ CREATE INDEX IF NOT EXISTS messages_by_pin ON messages (project_id, pin, created
 CREATE INDEX IF NOT EXISTS versions_by_project ON versions (project_id, seq);
 """
 # Columns added after a table first shipped: (table, column, definition). Applied once per database.
-ADDED_COLUMNS = (("messages", "issues", "TEXT NOT NULL DEFAULT ''"), ("versions", "spill", "TEXT NOT NULL DEFAULT ''"))
+ADDED_COLUMNS = ((("messages", "issues", "TEXT NOT NULL DEFAULT ''"), ("versions", "spill", "TEXT NOT NULL DEFAULT ''"),
+                  ("projects", "scratch", "INT NOT NULL DEFAULT 0"), ("projects", "last_pin", "INT NOT NULL DEFAULT 0")))
 
 STATUSES = ("open", "queued", "working", "needs_review", "question", "resolved", "wont_fix")
 AGENT_SETS = {"working", "needs_review", "question"}
@@ -81,14 +82,14 @@ def _touch(conn, project_id: str) -> None:
 
 
 def create_project(conn, *, title: str, src_name: str, size: tuple[int, int], first_version_file: str,
-                   project_id: str | None = None) -> dict:
+                   project_id: str | None = None, scratch: bool = False) -> dict:
     pid = project_id or new_id("rt")
     vid = new_id("v")
     now = _now()
     with conn:
         conn.execute("INSERT INTO projects (id, title, src_name, width, height, current_version, session_id, created_at, "
-                     "updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-                     (pid, title, src_name, size[0], size[1], vid, now, now))
+                     "updated_at, scratch) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+                     (pid, title, src_name, size[0], size[1], vid, now, now, 1 if scratch else 0))
         conn.execute("INSERT INTO versions (id, project_id, seq, parent, file, author, pin, method, summary, "
                      "outside_changed_px, inside_changed_px, created_at) "
                      "VALUES (?, ?, 0, NULL, ?, 'user', NULL, 'original', 'Original', 0, 0, ?)",
@@ -123,7 +124,16 @@ def add_pin(conn, project_id: str, *, shape: str, geom: dict, intent: str = "fix
     if intent not in ("fix", "remove", "enhance", "ask"):
         raise StoreError("intent must be fix, remove, enhance or ask")
     with conn:
-        n = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 FROM pins WHERE project_id = ?", (project_id,)).fetchone()[0]
+        # A number is never reused: versions and the chat transcript refer to marks by number, so a
+        # deleted mark's number stays retired. The project keeps the high-water mark; the write lock
+        # is taken before reading it so two overlapping adds cannot both see the same value.
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT last_pin FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is None:
+            raise StoreError(f"no Retouch project {project_id!r}")
+        n = max(row["last_pin"], conn.execute("SELECT COALESCE(MAX(number), 0) FROM pins WHERE project_id = ?",
+                                               (project_id,)).fetchone()[0]) + 1
+        conn.execute("UPDATE projects SET last_pin = ?, scratch = 0 WHERE id = ?", (n, project_id))
         conn.execute("INSERT INTO pins (project_id, number, shape, geom, intent, note, status, round, result_version, "
                      "created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', 1, NULL, ?)",
                      (project_id, n, shape, json.dumps(geom), intent, note.strip(), _now()))
@@ -240,7 +250,7 @@ def add_version(conn, project_id: str, *, file: str, author: str, pin: int | Non
                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (vid, project_id, seq, proj["current_version"], file, author, pin, method, summary,
                       outside_changed_px, inside_changed_px, _now(), ",".join(spill)))
-        conn.execute("UPDATE projects SET current_version = ? WHERE id = ?", (vid, project_id))
+        conn.execute("UPDATE projects SET current_version = ?, scratch = 0 WHERE id = ?", (vid, project_id))
         if pin is not None:
             conn.execute("UPDATE pins SET result_version = ? WHERE project_id = ? AND number = ?", (vid, project_id, pin))
         _touch(conn, project_id)
@@ -271,6 +281,40 @@ def set_session(conn, project_id: str, session_id: str | None) -> None:
         conn.execute("UPDATE projects SET session_id = ? WHERE id = ?", (session_id, project_id))
 
 
+def keep_project(conn, project_id: str) -> None:
+    """A scratch project (a screenshot the user has not decided about) becomes a normal one. Adding a
+    mark or a version keeps it too: work on it is the decision."""
+    require_project(conn, project_id)
+    with conn:
+        conn.execute("UPDATE projects SET scratch = 0 WHERE id = ?", (project_id,))
+        _touch(conn, project_id)
+
+
+def delete_scratch_project(conn, project_id: str, *, only_untouched: bool = False) -> bool:
+    """Delete a SCRATCH project and its rows in one transaction; False when nothing matched (kept,
+    gone, or, with ``only_untouched``, the user has marked or edited it). A kept project is never
+    deleted through this door."""
+    require_project(conn, project_id)
+    extra = ("AND NOT EXISTS (SELECT 1 FROM pins WHERE project_id = projects.id) "
+             "AND (SELECT COUNT(*) FROM versions WHERE project_id = projects.id) <= 1") if only_untouched else ""
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        gone = conn.execute(f"DELETE FROM projects WHERE id = ? AND scratch = 1 {extra}", (project_id,)).rowcount
+        if gone:
+            for table in ("messages", "pins", "versions"):
+                conn.execute(f"DELETE FROM {table} WHERE project_id = ?", (project_id,))
+    return bool(gone)
+
+
+def untouched_scratch_projects(conn, older_than: float) -> list[str]:
+    """Scratch projects with no marks and no edits that nobody touched since ``older_than``."""
+    rows = conn.execute(
+        "SELECT id FROM projects p WHERE scratch = 1 AND updated_at < ? "
+        "AND NOT EXISTS (SELECT 1 FROM pins WHERE project_id = p.id) "
+        "AND (SELECT COUNT(*) FROM versions WHERE project_id = p.id) <= 1", (older_than,)).fetchall()
+    return [r["id"] for r in rows]
+
+
 def pin_dict(conn, row: sqlite3.Row) -> dict:
     msgs = conn.execute("SELECT author, body, version, issues, created_at FROM messages WHERE project_id = ? AND pin = ? "
                         "ORDER BY created_at", (row["project_id"], row["number"])).fetchall()
@@ -287,11 +331,12 @@ def get_project(conn, project_id: str) -> dict:
                             (project_id,)).fetchall()
     return {"id": p["id"], "title": p["title"], "src_name": p["src_name"], "width": p["width"], "height": p["height"],
             "current_version": p["current_version"], "session_id": p["session_id"], "updated_at": p["updated_at"],
+            "scratch": bool(p["scratch"]),
             "pins": [pin_dict(conn, r) for r in pins], "versions": [dict(v) for v in versions]}
 
 
 def list_projects(conn, limit: int = 50) -> list[dict]:
-    rows = conn.execute("SELECT p.id, p.title, p.width, p.height, p.updated_at, "
+    rows = conn.execute("SELECT p.id, p.title, p.width, p.height, p.updated_at, p.scratch, "
                         "(SELECT COUNT(*) FROM pins WHERE project_id = p.id AND status NOT IN ('resolved', 'wont_fix')) "
                         "AS open_marks FROM projects p ORDER BY p.updated_at DESC LIMIT ?", (limit,)).fetchall()
-    return [dict(r) for r in rows]
+    return [dict(r, scratch=bool(r["scratch"])) for r in rows]

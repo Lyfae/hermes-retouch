@@ -222,7 +222,7 @@ def handle_reply(args: dict, **_kw) -> str:
 
 def handle_export(args: dict, **_kw) -> str:
     try:
-        path = service.Workspace.current().export(
+        path = service.Workspace.current().export_and_keep(
             str(args.get("project_id") or ""), version_id=args.get("version"), fmt=args.get("format") or "png",
             quality=int(args.get("quality") or 90), max_side=args.get("max_side"),
             strip_gps=bool(args.get("strip_gps", True)), directory=args.get("directory"))

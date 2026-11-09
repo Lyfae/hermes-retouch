@@ -19,6 +19,9 @@ import {
   GlyphSpinner,
   host,
   icons,
+  KEYBINDS_AREA,
+  PALETTE_AREA,
+  TITLEBAR_AREAS,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -256,6 +259,28 @@ async function upload(file, onOpened) {
   if (project?.id) onOpened(project.id)
 }
 
+// The OS region picker runs on the gateway host; the capture opens as a scratch project the user
+// keeps (Keep, Save, or by marking or editing it) or discards. Resolves to nothing when they press
+// Escape in the picker.
+async function takeScreenshot(onOpened) {
+  const session = host.state.activeSessionId.get()
+  const res = await act(() => rest('/screenshot', { method: 'POST', body: { session_id: session || null }, timeoutMs: 65000 }))
+  if (res?.project?.id) onOpened(res.project.id)
+}
+
+// Is the active profile served by a gateway on THIS machine? Unknown (older Desktop) counts as no.
+async function gatewayIsLocal() {
+  if (typeof host.profileRoutes !== 'function') return false
+  try {
+    const routes = await host.profileRoutes()
+    const profile = host.state.profile?.get?.()
+    const route = routes.find(r => r.targetProfile === profile || r.profile === profile) || routes.find(r => r.primary)
+    return route?.mode === 'local'
+  } catch {
+    return false
+  }
+}
+
 async function sendToAgent(project, numbers) {
   const open = project.pins.filter(p => p.status === 'open' && (!numbers || numbers.includes(p.number))).map(p => p.number)
   if (!open.length) return
@@ -324,6 +349,17 @@ function Start({ onOpened }) {
   const input = useRef(null)
   const [over, setOver] = useState(false)
   const { data } = useQuery({ queryKey: [...QK, 'projects'], queryFn: () => rest('/projects') })
+  // The picker runs on the GATEWAY host. Offer it only when that host is this machine (a local
+  // route) and it has the tool; a remote gateway's crosshair would appear on someone else's screen.
+  const caps = useQuery({
+    queryKey: [...QK, 'capabilities'],
+    queryFn: async () => {
+      const [server, local] = await Promise.all([rest('/capabilities'), gatewayIsLocal()])
+      return { screenshot: Boolean(server?.screenshot) && local }
+    },
+    staleTime: Infinity
+  })
+  const [shooting, setShooting] = useState(false)
   const recent = (data?.projects || []).slice(0, 6)
   return jsxs('div', {
     tabIndex: 0,
@@ -372,8 +408,33 @@ function Start({ onOpened }) {
             style: { color: 'var(--ui-text-tertiary)', lineHeight: '18px' },
             children: 'Mark what needs work and say what you want. Hermes changes only the areas you mark, and every edit can be undone.'
           }),
-          jsx(Button, { size: 'sm', onClick: () => input.current?.click(), children: 'Open an image' }),
-          jsx('div', { style: { fontSize: 12, color: 'var(--ui-text-quaternary)' }, children: 'or drop one here, or paste with ⌘V' })
+          jsxs('div', {
+            style: { display: 'flex', gap: 8 },
+            children: [
+              jsx(Button, { size: 'sm', onClick: () => input.current?.click(), children: 'Open an image' }),
+              caps.data?.screenshot &&
+                jsxs(Button, {
+                  size: 'sm',
+                  variant: 'secondary',
+                  disabled: shooting,
+                  onClick: async () => {
+                    setShooting(true)
+                    try {
+                      await takeScreenshot(onOpened)
+                    } finally {
+                      setShooting(false)
+                    }
+                  },
+                  children: [shooting ? jsx(GlyphSpinner, { ariaLabel: 'Pick a region' }) : icon(icons.Monitor), shooting ? 'Pick a region…' : 'Screenshot']
+                })
+            ]
+          }),
+          jsx('div', {
+            style: { fontSize: 12, color: 'var(--ui-text-quaternary)' },
+            children: caps.data?.screenshot
+              ? 'or drop one here, or paste with ⌘V · a screenshot is kept only if you mark, edit, Keep or Save it'
+              : 'or drop one here, or paste with ⌘V (⌘⇧⌃4 copies a region of the screen)'
+          })
         ]
       }),
       recent.length > 0 &&
@@ -828,7 +889,7 @@ function IconButton({ label, active = false, children, ...props }) {
   })
 }
 
-function Header({ project, comparing, setComparing, onOpen }) {
+function Header({ project, comparing, setComparing, onOpen, onDiscarded }) {
   const current = project.versions.find(v => v.id === project.current_version)
   const edits = current ? current.seq : 0
   const working = project.pins.some(p => statusOf(p.status).busy)
@@ -859,6 +920,28 @@ function Header({ project, comparing, setComparing, onOpen }) {
           children: [jsx(GlyphSpinner, { ariaLabel: 'Working' }), 'Hermes is working']
         }),
       jsx('span', { style: { flex: 1 } }),
+      project.scratch &&
+        jsxs('span', {
+          style: { display: 'inline-flex', alignItems: 'center', gap: 4, marginRight: 6 },
+          children: [
+            jsx('span', { style: { fontSize: 11, color: 'var(--ui-text-quaternary)', whiteSpace: 'nowrap' }, children: 'Screenshot · kept once you mark, edit or save it' }),
+            jsxs(Button, {
+              size: 'sm',
+              variant: 'ghost',
+              onClick: () => act(() => rest(`/projects/${project.id}/keep`, { method: 'POST', body: {} })),
+              children: [icon(icons.Check), 'Keep']
+            }),
+            jsxs(Button, {
+              size: 'sm',
+              variant: 'ghost',
+              onClick: async () => {
+                const ok = await act(() => rest(`/projects/${project.id}`, { method: 'DELETE' }))
+                if (ok) onDiscarded(project.id)
+              },
+              children: [icon(icons.Trash2), 'Discard']
+            })
+          ]
+        }),
       jsx(IconButton, {
         label: 'Hold to see the original',
         active: comparing,
@@ -899,7 +982,8 @@ function Header({ project, comparing, setComparing, onOpen }) {
           })
         ]
       }),
-      jsx(IconButton, { label: 'Open another image', onClick: onOpen, children: icon(icons.FolderOpen) })
+      jsx(IconButton, { label: 'Open another image', onClick: onOpen, children: icon(icons.FolderOpen) }),
+      closeTile && jsx(IconButton, { label: 'Close Retouch', onClick: () => closeTile?.(), children: icon(icons.X) })
     ]
   })
 }
@@ -1077,7 +1161,7 @@ function Workbench({ projectId, onOpened, onClose }) {
     style: { position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', outline: 'none', overflow: 'hidden' },
     children: [
       jsx(FilePicker, { inputRef: input, onOpened }),
-      jsx(Header, { project, comparing, setComparing, onOpen: () => input.current?.click() }),
+      jsx(Header, { project, comparing, setComparing, onOpen: () => input.current?.click(), onDiscarded: onClose }),
       jsxs('div', {
         style: { position: 'relative', flex: 1, minHeight: 0 },
         children: [
@@ -1129,8 +1213,48 @@ function RetouchPane() {
     setProjectId(next)
   }
   return projectId
-    ? jsx(Workbench, { projectId, onOpened: choose, onClose: () => choose(null) }, projectId)
+    ? jsx(Workbench, {
+        projectId,
+        onOpened: choose,
+        onClose: gone => {
+          // a discarded project must not be refetched by the queries still mounted for it
+          if (gone) queryClient.removeQueries({ queryKey: [...QK, 'project', gone] })
+          choose(null)
+        }
+      }, projectId)
     : jsx(Start, { onOpened: choose })
+}
+
+// Retouch is a window you open and close, not a fixture: enabling the plugin adds one toggle
+// (⌘⇧E, the image button in the title bar, or "Retouch" in ⌘K). Open puts the workbench in a
+// closeable tile docked to the RIGHT of the chat, like a session tile, so you mark while you talk;
+// the same toggle, the tile's tab ×, ⌘W or the × in Retouch's own header closes it. Closing never
+// disables the plugin.
+let closeTile = null // disposer of the open tile, while one is open
+const TILE_PANE_ID = 'plugin-workspace:retouch' // what openWorkspace names the tile
+
+function openRetouch() {
+  if (typeof host.openWorkspace !== 'function') {
+    host.notify({ kind: 'error', message: 'Retouch needs Hermes Desktop 0.22 or newer to open its window.' })
+    return
+  }
+  // Re-opening the same id fronts the existing tile instead of stacking another, so a tile the
+  // user tucked behind the chat comes forward rather than closing.
+  closeTile = host.openWorkspace('retouch', {
+    title: 'Retouch',
+    dock: { pane: 'workspace', pos: 'right' },
+    minWidth: '26rem',
+    render: () => jsx(RetouchPane, {}),
+    onClose: () => {
+      closeTile = null
+    }
+  })
+}
+
+function toggleRetouch() {
+  const visible = typeof host.paneVisibility === 'function' ? host.paneVisibility(TILE_PANE_ID).get() : true
+  if (closeTile && visible) closeTile()
+  else openRetouch()
 }
 
 export default {
@@ -1139,12 +1263,28 @@ export default {
   register(ctx) {
     api = ctx
     ctx.onEvent(EVENT, () => refresh())
-    ctx.register({
-      id: 'pane',
-      area: 'panes',
-      title: 'Retouch',
-      data: { placement: 'right', width: '50%' },
-      render: () => jsx(RetouchPane, {})
-    })
+    ctx.onDispose(() => closeTile?.())
+    ctx.registerMany([
+      {
+        id: 'toggle',
+        area: PALETTE_AREA,
+        data: { id: 'retouch.toggle', label: 'Retouch: open / close', action: 'retouch.toggle', keywords: ['retouch', 'image', 'edit', 'mark', 'screenshot'], run: toggleRetouch }
+      },
+      {
+        id: 'key-toggle',
+        area: KEYBINDS_AREA,
+        data: { id: 'retouch.toggle', label: 'Open or close Retouch', category: 'view', defaults: ['mod+shift+e'], run: toggleRetouch }
+      },
+      {
+        id: 'titlebar',
+        area: TITLEBAR_AREAS.right,
+        data: { id: 'retouch.titlebar', label: 'Retouch', icon: icon(icons.ImageIcon), actionId: 'retouch.toggle', onSelect: toggleRetouch }
+      }
+    ])
+    // Enabling the plugin shows nothing by itself; say once where the window is.
+    if (!ctx.storage.get('introduced', false)) {
+      ctx.storage.set('introduced', true)
+      host.notify({ kind: 'info', message: 'Retouch is on. Open it with ⌘⇧E or the image button in the title bar.' })
+    }
   }
 }

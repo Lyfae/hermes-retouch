@@ -10,7 +10,12 @@ from __future__ import annotations
 import base64
 import io
 import re
+import shutil
 import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -139,7 +144,7 @@ class Workspace:
             return self.project_dir(project_id) / store.version(conn, project_id, version_id)["file"]
 
     # -- projects and marks -----------------------------------------------------------------------
-    def create_project(self, filename: str, data: bytes, *, session_id: str | None = None) -> dict:
+    def create_project(self, filename: str, data: bytes, *, session_id: str | None = None, scratch: bool = False) -> dict:
         try:
             got = ingest_mod.ingest(data)
         except ingest_mod.IngestError as exc:
@@ -155,10 +160,76 @@ class Workspace:
         first = self._save_version_file(project_id, got.image)
         with self.db() as conn:
             project = store.create_project(conn, title=export_mod.safe_stem(filename), src_name=Path(filename or "image").name,
-                                           size=got.image.size, first_version_file=first, project_id=project_id)
+                                           size=got.image.size, first_version_file=first, project_id=project_id, scratch=scratch)
             if session_id:
                 store.set_session(conn, project_id, session_id)
         return project
+
+    # -- screenshots: scratch projects the user keeps or discards -------------------------------------
+    SCRATCH_TTL = 24 * 3600
+    # Under the 60 s the plugin host allows a buffered request; the pane shows the hint for longer.
+    PICKER_TIMEOUT = 55
+
+    @staticmethod
+    def can_screenshot() -> bool:
+        return sys.platform == "darwin" and shutil.which("screencapture") is not None
+
+    def screenshot(self, *, session_id: str | None = None) -> dict | None:
+        """Let the user pick a region with the OS screenshot tool and open it as a scratch project.
+        Returns None when they cancel. macOS only (``screencapture -i``); elsewhere, paste."""
+        if not self.can_screenshot():
+            raise RetouchError("screenshots from Retouch work on macOS only; take one with your OS tool and paste it")
+        self.sweep_scratch()
+        with tempfile.TemporaryDirectory(prefix="retouch-shot-") as tmp:
+            path = Path(tmp) / "shot.png"
+            try:
+                # -i: interactive region/window pick; the user's Escape exits 0 and leaves no file
+                run = subprocess.run(["screencapture", "-i", str(path)], check=False, capture_output=True,
+                                     text=True, timeout=self.PICKER_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                raise RetouchError(f"no region was picked within {self.PICKER_TIMEOUT} s; try again") from None
+            except OSError as exc:
+                raise RetouchError(f"could not start the screenshot tool: {exc}") from None
+            if run.returncode != 0:
+                detail = (run.stderr or "").strip() or f"exit code {run.returncode}"
+                raise RetouchError(f"the screenshot tool failed: {detail}. If this is the first time, allow Screen "
+                                   "Recording for the Hermes gateway in System Settings > Privacy & Security")
+            if not path.is_file():
+                return None
+            data = path.read_bytes()
+        stamp = time.strftime("%Y-%m-%d-%H.%M.%S")
+        return self.create_project(f"Screenshot-{stamp}.png", data, session_id=session_id, scratch=True)
+
+    def keep(self, project_id: str) -> dict:
+        with self.db() as conn:
+            store.keep_project(conn, project_id)
+        notify(project_id)
+        return self.project(project_id)
+
+    def discard(self, project_id: str) -> None:
+        """Delete a scratch project. A kept project is refused: Discard exists for screenshots the
+        user has not decided about, nothing else."""
+        pdir = self.project_dir(project_id)
+        with self.db() as conn:
+            gone = store.delete_scratch_project(conn, project_id)
+        if not gone:
+            raise RetouchError("this project was kept; Retouch does not delete kept projects")
+        shutil.rmtree(pdir, ignore_errors=True)
+        notify(project_id)
+
+    def sweep_scratch(self) -> list[str]:
+        """Delete scratch projects the user never marked or edited and has not touched for
+        SCRATCH_TTL; returns their ids. Each delete re-checks its own condition in the transaction."""
+        with self.db() as conn:
+            candidates = store.untouched_scratch_projects(conn, time.time() - self.SCRATCH_TTL)
+        swept = []
+        for pid in candidates:
+            with self.db() as conn:
+                gone = store.delete_scratch_project(conn, pid, only_untouched=True)
+            if gone:
+                shutil.rmtree(self.project_dir(pid), ignore_errors=True)
+                swept.append(pid)
+        return swept
 
     def project(self, project_id: str) -> dict:
         self.project_dir(project_id)
@@ -384,3 +455,10 @@ class Workspace:
         if not dest.is_absolute():
             raise RetouchError("directory must be an absolute path")
         return export_mod.write_new(dest, f"{proj['title']}-retouched", data, ext)
+
+    def export_and_keep(self, project_id: str, **kwargs) -> Path:
+        """Saving a scratch project is the user keeping it."""
+        path = self.export(project_id, **kwargs)
+        if self.project(project_id)["scratch"]:
+            self.keep(project_id)
+        return path

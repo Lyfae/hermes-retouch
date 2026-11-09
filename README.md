@@ -55,15 +55,21 @@ ln -s "$PWD/hermes-retouch" ~/.hermes/plugins/retouch
 hermes plugins enable retouch
 ```
 
-Then turn on the Desktop half in the app: **Capabilities → Plugins → Retouch**. The pane joins the
-right side of the window; drag it wherever you like.
+Then turn on the Desktop half in the app: **Capabilities → Plugins → Retouch**. Nothing opens by
+itself: press **⌘⇧E**, click the image button in the title bar, or ⌘K → "Retouch: open / close".
+The window docks to the right of the chat; the same toggle, ⌘W or its × closes it.
 
 After updating the plugin, restart the gateway (`hermes gateway restart`). The pane's backend
 routes are loaded once per gateway process.
 
 ## Using it
 
-1. Open an image in the Retouch pane: the button, drag and drop, or paste with ⌘V.
+1. Open an image in the Retouch window: the button, drag and drop, paste with ⌘V, or **Screenshot**.
+   Screenshot appears only when the gateway runs on this Mac: it opens the system region picker,
+   and the capture lands as a *scratch* project ("Screenshot · kept once you mark, edit or save
+   it"). Marking it, editing it, **Keep** or **Save** makes it permanent; **Discard** deletes it.
+   Scratch projects you never marked, edited or kept are deleted a day later, the next time you
+   press Screenshot. Elsewhere, ⌘⇧⌃4 copies a region of the screen; paste it with ⌘V.
 2. Pick a tool from the toolbar: Select **V**, Pen **P**, Box **R**, Ellipse **E**, Lasso **L**,
    Note **T**. Draw on the image, choose an intent, write what you want, and press ⌘↩.
 3. Click **Send**. The pane asks Hermes in the open chat to work on your marks.
@@ -94,15 +100,26 @@ Only you close a mark. Hermes can mark it as working, ready for review, or a que
   applies; some providers return results at public URLs, so don't use `generate` on images you
   can't share with your provider.
 - `from_file` reads an image at an absolute path the agent passes to it.
-- Retouch makes no other network calls, runs no shell commands or background processes, stores no
-  credentials and sends no telemetry.
+- **Screenshot** (macOS, local gateway only) runs the system `screencapture -i` picker on the
+  machine the gateway runs on and reads the one file it writes to a temporary folder, for at most
+  55 seconds. This is Retouch's only subprocess; nothing is captured without you choosing the
+  region, and the pane hides the button when your gateway is remote. Untouched screenshot projects
+  are the only thing Retouch ever deletes on its own (see Using it); Discard refuses a kept project.
+- Retouch makes no other network calls, runs no other shell commands or background processes,
+  stores no credentials and sends no telemetry.
 
 ## Development
 
 ```bash
-uv run --no-project --python 3.11 --with "pillow==12.3.0" --with pytest pytest tests -q
+uv run --no-project --python 3.11 --with "pillow==12.3.0" --with pytest pytest tests -q   # unit tests, declared floor
+uv run --no-project --python 3.14 --with "pillow==13.0.0" --with pytest --with hypothesis pytest verify -q  # property checks
 hermes plugins validate .
 ```
+
+`verify/` holds Hypothesis checks of the two promises above (every pixel outside a mark untouched,
+for generated images and marks; the mark/version state machine honest under generated sequences
+of user and agent calls). `.hermes/skills/verify-retouch/SKILL.md` says when to run them and how
+to read a failure.
 
 The library lives in `retouch/` (geometry, compositing, operations, storage, the service), the
 agent tools in `tools.py`, the pane's REST backend in `dashboard/plugin_api.py` and the pane in
