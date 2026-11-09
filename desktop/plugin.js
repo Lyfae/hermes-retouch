@@ -281,6 +281,20 @@ async function gatewayIsLocal() {
   }
 }
 
+// The picker runs on the GATEWAY host. Offer it only when that host is this machine (a local
+// route) and it has the tool; a remote gateway's crosshair would appear on someone else's screen.
+function useCanScreenshot() {
+  const caps = useQuery({
+    queryKey: [...QK, 'capabilities'],
+    queryFn: async () => {
+      const [server, local] = await Promise.all([rest('/capabilities'), gatewayIsLocal()])
+      return { screenshot: Boolean(server?.screenshot) && local }
+    },
+    staleTime: Infinity
+  })
+  return Boolean(caps.data?.screenshot)
+}
+
 async function sendToAgent(project, numbers) {
   const open = project.pins.filter(p => p.status === 'open' && (!numbers || numbers.includes(p.number))).map(p => p.number)
   if (!open.length) return
@@ -349,16 +363,7 @@ function Start({ onOpened }) {
   const input = useRef(null)
   const [over, setOver] = useState(false)
   const { data } = useQuery({ queryKey: [...QK, 'projects'], queryFn: () => rest('/projects') })
-  // The picker runs on the GATEWAY host. Offer it only when that host is this machine (a local
-  // route) and it has the tool; a remote gateway's crosshair would appear on someone else's screen.
-  const caps = useQuery({
-    queryKey: [...QK, 'capabilities'],
-    queryFn: async () => {
-      const [server, local] = await Promise.all([rest('/capabilities'), gatewayIsLocal()])
-      return { screenshot: Boolean(server?.screenshot) && local }
-    },
-    staleTime: Infinity
-  })
+  const canShoot = useCanScreenshot()
   const [shooting, setShooting] = useState(false)
   const recent = (data?.projects || []).slice(0, 6)
   return jsxs('div', {
@@ -412,7 +417,7 @@ function Start({ onOpened }) {
             style: { display: 'flex', gap: 8 },
             children: [
               jsx(Button, { size: 'sm', onClick: () => input.current?.click(), children: 'Open an image' }),
-              caps.data?.screenshot &&
+              canShoot &&
                 jsxs(Button, {
                   size: 'sm',
                   variant: 'secondary',
@@ -431,7 +436,7 @@ function Start({ onOpened }) {
           }),
           jsx('div', {
             style: { fontSize: 12, color: 'var(--ui-text-quaternary)' },
-            children: caps.data?.screenshot
+            children: canShoot
               ? 'or drop one here, or paste with ⌘V · a screenshot is kept only if you mark, edit, Keep or Save it'
               : 'or drop one here, or paste with ⌘V (⌘⇧⌃4 copies a region of the screen)'
           })
@@ -889,11 +894,13 @@ function IconButton({ label, active = false, children, ...props }) {
   })
 }
 
-function Header({ project, comparing, setComparing, onOpen, onDiscarded }) {
+function Header({ project, comparing, setComparing, onOpen, onOpened, onDiscarded }) {
   const current = project.versions.find(v => v.id === project.current_version)
   const edits = current ? current.seq : 0
   const working = project.pins.some(p => statusOf(p.status).busy)
   const release = () => setComparing(false)
+  const canShoot = useCanScreenshot()
+  const [shooting, setShooting] = useState(false)
   return jsxs('div', {
     style: {
       height: 40,
@@ -982,6 +989,20 @@ function Header({ project, comparing, setComparing, onOpen, onDiscarded }) {
           })
         ]
       }),
+      canShoot &&
+        jsx(IconButton, {
+          label: shooting ? 'Pick a region…' : 'Screenshot a new image',
+          disabled: shooting,
+          onClick: async () => {
+            setShooting(true)
+            try {
+              await takeScreenshot(onOpened)
+            } finally {
+              setShooting(false)
+            }
+          },
+          children: icon(icons.Monitor)
+        }),
       jsx(IconButton, { label: 'Open another image', onClick: onOpen, children: icon(icons.FolderOpen) }),
       closeTile && jsx(IconButton, { label: 'Close Retouch', onClick: () => closeTile?.(), children: icon(icons.X) })
     ]
@@ -1161,7 +1182,7 @@ function Workbench({ projectId, onOpened, onClose }) {
     style: { position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', outline: 'none', overflow: 'hidden' },
     children: [
       jsx(FilePicker, { inputRef: input, onOpened }),
-      jsx(Header, { project, comparing, setComparing, onOpen: () => input.current?.click(), onDiscarded: onClose }),
+      jsx(Header, { project, comparing, setComparing, onOpen: () => input.current?.click(), onOpened, onDiscarded: onClose }),
       jsxs('div', {
         style: { position: 'relative', flex: 1, minHeight: 0 },
         children: [
