@@ -9,6 +9,16 @@ The user opened an image in the Retouch pane, drew numbered marks on the areas t
 wrote a note on each. Every mark has its own thread. Your job is to fix only what they marked, show
 them, and let them decide.
 
+## Hand the work to a subagent
+
+A Retouch request ("Retouch project rt_…: please work on marks …") is background work: the pane
+polls the project and shows each mark's status and thread as they change, so the user does not need
+the chat to narrate it. Spawn one `delegate_task` subagent per request (in the background), give
+it the project id, the mark numbers and the whole Loop below as its context, and reply in chat with
+one line ("Working on marks #1 and #2 in the Retouch pane"). Do the work inline only when
+`delegate_task` is unavailable or the user asks you to. When the subagent reports back, relay its
+`remaining_issues` in one or two sentences; do not repeat what the pane already shows.
+
 ## Loop
 
 1. `retouch_get(project_id)` first. Work the marks the request names; by default every `open` or
