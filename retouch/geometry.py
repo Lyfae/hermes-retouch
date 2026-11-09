@@ -92,7 +92,23 @@ def build_mask(shape: str, geom: dict, size: tuple[int, int]) -> Image.Image:
         r = stroke / 2
         for x, y in pts:
             draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
+        # A pen stroke that comes back to its start is a circle drawn around something: the user
+        # means what is inside, not a thin ring (a ring tells the model to repaint only the ring).
+        if brush_is_closed(pts, stroke):
+            draw.polygon(pts, fill=255)
     mask = mask.point(lambda v: 255 if v >= 128 else 0)
     if mask.getbbox() is None:
         raise GeometryError("the mark does not cover any pixels of the image")
     return mask
+
+
+def brush_is_closed(pts: list[tuple[float, float]], stroke: float) -> bool:
+    """A stroke of at least 8 points whose ends meet (within two stroke widths or 20% of its extent)."""
+    if len(pts) < 8:
+        return False
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    extent = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    if extent < stroke * 3:
+        return False
+    gap = math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1])
+    return gap <= max(stroke * 2, extent * 0.2)
