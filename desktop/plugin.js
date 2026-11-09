@@ -894,7 +894,7 @@ function IconButton({ label, active = false, children, ...props }) {
   })
 }
 
-function Header({ project, comparing, setComparing, onOpen, onOpened, onDiscarded }) {
+function Header({ project, comparing, setComparing, note, onOpen, onOpened, onDiscarded }) {
   const current = project.versions.find(v => v.id === project.current_version)
   const edits = current ? current.seq : 0
   const working = project.pins.some(p => statusOf(p.status).busy)
@@ -919,7 +919,7 @@ function Header({ project, comparing, setComparing, onOpen, onOpened, onDiscarde
       }),
       jsx('span', {
         style: { marginLeft: 8, fontSize: 11, color: 'var(--ui-text-quaternary)', whiteSpace: 'nowrap' },
-        children: comparing ? 'Showing the original' : edits ? `${edits} edit${edits > 1 ? 's' : ''}` : 'Original'
+        children: note || (edits ? `${edits} edit${edits > 1 ? 's' : ''}` : 'Original')
       }),
       working &&
         jsxs('span', {
@@ -1101,6 +1101,69 @@ function Toolbar({ project, tool, setTool, shapeKind, setShapeKind, onClose }) {
 
 // --- the workbench -----------------------------------------------------------------------------
 
+// The versions from the original up to the current one, oldest first. Edits made after a revert
+// branch off the reverted-to version, so this walks parents rather than sorting every version.
+function versionChain(project) {
+  const byId = new Map(project.versions.map(v => [v.id, v]))
+  const chain = []
+  for (let v = byId.get(project.current_version); v; v = v.parent ? byId.get(v.parent) : null) chain.unshift(v)
+  return chain
+}
+
+function versionLabel(v, i) {
+  if (i === 0) return 'Original'
+  return `Edit ${i}${v.pin ? ` · mark #${v.pin}` : ''}${v.summary ? ` · ${v.summary}` : ''}`
+}
+
+// Step through every version and look at the picture with or without the marks. Looking is not
+// editing: the current version stays where it is; Undo in the header is what moves it.
+function VersionStrip({ project, viewing, setViewing, clean, setClean }) {
+  const chain = versionChain(project)
+  const shown = viewing || project.current_version
+  if (chain.length < 2 && project.pins.length === 0) return null
+  return jsxs('div', {
+    className: 'shadow-md',
+    role: 'tablist',
+    'aria-label': 'Versions',
+    style: {
+      position: 'absolute',
+      left: '50%',
+      top: 14,
+      transform: 'translateX(-50%)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 2,
+      padding: 3,
+      borderRadius: 10,
+      border: '1px solid var(--ui-stroke-secondary)',
+      background: 'color-mix(in srgb, var(--ui-bg-elevated) 94%, transparent)',
+      backdropFilter: 'blur(12px)',
+      zIndex: 2,
+      maxWidth: 'calc(100% - 28px)',
+      overflowX: 'auto'
+    },
+    children: [
+      ...chain.map((v, i) =>
+        jsx(Tip, {
+          label: versionLabel(v, i) + (v.id === project.current_version ? ' (current)' : ''),
+          children: jsx(Button, {
+            size: 'sm',
+            role: 'tab',
+            'aria-selected': v.id === shown,
+            variant: v.id === shown ? 'secondary' : 'ghost',
+            style: { height: 24, padding: '0 8px', fontSize: 12, fontVariantNumeric: 'tabular-nums' },
+            onClick: () => setViewing(v.id === project.current_version ? null : v.id),
+            children: i === 0 ? 'Original' : String(i)
+          })
+        }, v.id)
+      ),
+      project.pins.length > 0 && jsx('span', { style: { width: 1, height: 18, margin: '0 3px', background: 'var(--ui-stroke-secondary)' } }),
+      project.pins.length > 0 &&
+        jsx(IconButton, { label: clean ? 'Show the marks (H)' : 'Hide the marks (H)', active: clean, onClick: () => setClean(c => !c), children: icon(clean ? icons.EyeOff : icons.Eye, 14) })
+    ]
+  })
+}
+
 const TOOL_KEYS = { v: ['select'], p: ['pen'], t: ['text'], r: ['shape', 'rect'], e: ['shape', 'ellipse'], l: ['shape', 'lasso'] }
 
 function LoadError({ error, retry, onClose }) {
@@ -1123,8 +1186,11 @@ function LoadError({ error, retry, onClose }) {
 function Workbench({ projectId, onOpened, onClose }) {
   const { data: project, error, refetch } = useProject(projectId)
   const [comparing, setComparing] = useState(false)
+  const [viewing, setViewing] = useState(null) // a version id to look at, or null for the current one
+  const [clean, setClean] = useState(false) // marks hidden
   const { data: current } = useImage(projectId, project?.current_version)
   const { data: before } = useImage(projectId, project?.versions?.[0]?.id, comparing)
+  const { data: viewed } = useImage(projectId, viewing, Boolean(viewing))
   const [tool, setTool] = useState('shape')
   const [shapeKind, setShapeKind] = useState('ellipse')
   const [draft, setDraft] = useState(null)
@@ -1135,6 +1201,10 @@ function Workbench({ projectId, onOpened, onClose }) {
   useEffect(() => {
     if (selected && project && !project.pins.some(p => p.number === selected)) setSelected(null)
   }, [project, selected])
+  useEffect(() => {
+    // a viewed version that left the chain (revert, or the current moved onto it) falls back to current
+    if (viewing && project && !versionChain(project).some(v => v.id === viewing && v.id !== project.current_version)) setViewing(null)
+  }, [project, viewing])
 
   if (!project && error) return jsx(LoadError, { error, retry: refetch, onClose })
   if (!project) return jsx('div', { style: { padding: 16, fontSize: 13, color: 'var(--ui-text-tertiary)' }, children: 'Loading…' })
@@ -1147,7 +1217,21 @@ function Workbench({ projectId, onOpened, onClose }) {
       setTool(t)
       if (kind) setShapeKind(kind)
       e.preventDefault()
+    } else if (key === 'h') {
+      setClean(c => !c)
+      e.preventDefault()
+    } else if (key === '[' || key === ']') {
+      const chain = versionChain(project)
+      const at = chain.findIndex(v => v.id === (viewing || project.current_version))
+      const next = chain[at + (key === '[' ? -1 : 1)]
+      if (next) setViewing(next.id === project.current_version ? null : next.id)
+      e.preventDefault()
     } else if (key === 'escape') {
+      if (viewing || clean) {
+        setViewing(null)
+        setClean(false)
+        return
+      }
       setDraft(null)
       setSelected(null)
     } else if ((key === 'delete' || key === 'backspace') && selected) {
@@ -1166,6 +1250,13 @@ function Workbench({ projectId, onOpened, onClose }) {
     if (draft && !draft.ready) setDraft(null)
   }
 
+  // Looking at another version or hiding the marks is view-only, like holding the compare button.
+  const viewOnly = comparing || clean || Boolean(viewing)
+  const chain = versionChain(project)
+  const viewedIndex = viewing ? chain.findIndex(v => v.id === viewing) : -1
+  const note = comparing ? 'Showing the original' : viewing ? (viewedIndex === 0 ? 'Viewing the original' : `Viewing edit ${viewedIndex} of ${chain.length - 1}`) : clean ? 'Marks hidden' : null
+  const image = comparing && before ? before : viewing && viewed ? viewed : current
+
   return jsxs('div', {
     ref: pane,
     tabIndex: 0,
@@ -1182,7 +1273,7 @@ function Workbench({ projectId, onOpened, onClose }) {
     style: { position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', outline: 'none', overflow: 'hidden' },
     children: [
       jsx(FilePicker, { inputRef: input, onOpened }),
-      jsx(Header, { project, comparing, setComparing, onOpen: () => input.current?.click(), onOpened, onDiscarded: onClose }),
+      jsx(Header, { project, comparing, setComparing, note, onOpen: () => input.current?.click(), onOpened, onDiscarded: onClose }),
       jsxs('div', {
         style: { position: 'relative', flex: 1, minHeight: 0 },
         children: [
@@ -1191,8 +1282,8 @@ function Workbench({ projectId, onOpened, onClose }) {
             children: jsxs('div', {
               style: { position: 'relative' },
               children: [
-                jsx(Stage, { project, image: comparing && before ? before : current, comparing, tool, shapeKind, draft, setDraft, selected, onSelect: select }),
-                !comparing &&
+                jsx(Stage, { project, image, comparing: viewOnly, tool, shapeKind, draft, setDraft, selected, onSelect: select }),
+                !viewOnly &&
                   jsx('div', {
                     style: { position: 'absolute', inset: 0, pointerEvents: 'none' },
                     children: jsx(BubbleAnchor, { project, draft, selected, setDraft, onSelect: setSelected, paneRef: pane })
@@ -1219,6 +1310,7 @@ function Workbench({ projectId, onOpened, onClose }) {
               },
               children: 'Draw on the image where something needs work'
             }),
+          jsx(VersionStrip, { project, viewing, setViewing, clean, setClean }),
           jsx(Toolbar, { project, tool, setTool: chooseTool, shapeKind, setShapeKind, onClose })
         ]
       })
