@@ -14,8 +14,8 @@ review, and four agent tools Hermes uses to do the work.
 - **Marks.** Draw with the pen, a box, an ellipse or a lasso, or drop a note at a spot. Each mark
   has an intent (fix, remove, enhance, ask) and a note in your own words. A pen stroke whose ends
   meet is a loop: the pane tints its inside, because Hermes may change everything inside it.
-- **One thread per mark.** Send the marks and Hermes works on them in the background (one subagent
-  per Send; the chat shows one line and the pane shows progress).
+- **One thread per mark.** Send the marks and Hermes works on them in a hidden session of Retouch's
+  own: nothing is typed into your chat, and the pane shows progress.
   Its replies, questions and your answers stay attached to the mark they are about.
 - **Edits stay inside the marks.** Every result is blended through the mark's mask and compared
   with the previous version. An edit that changes even one pixel outside its mark is refused and
@@ -80,7 +80,8 @@ routes are loaded once per gateway process.
    marked, edited or kept are deleted a day later, the next time you paste.
 2. Pick a tool from the toolbar: Select **V**, Pen **P**, Box **R**, Ellipse **E**, Lasso **L**,
    Note **T**. Draw on the image, choose an intent, write what you want, and press ⌘↩.
-3. Click **Send**. The pane asks Hermes in the open chat to work on your marks.
+3. Click **Send**. Hermes starts on your marks in Retouch's own hidden session; your chat is not
+   touched. (If the app cannot make that session, the request goes to your open chat instead.)
 4. Click a mark's number to see Hermes's reply, the result and any warnings. Accept it, or say what
    is still wrong and send it back. Step through the versions with **[** and **]**, hide the
    outlines with **H**, and press Esc to return to the current picture.
@@ -105,8 +106,9 @@ Only you close a mark. Hermes can mark it as working, ready for review, or a que
   `<HERMES_HOME>/plugin-data/retouch/`, separately for each Hermes profile.
 - **Your chat model sees the picture.** Every `retouch_get` sends a downscaled overview of the
   whole image plus a close-up of each mark to your chat model's provider, and every `retouch_edit`
-  sends a before/after strip. Each Send starts one background subagent to do the work; if you
-  configured delegation to use a different model or provider, the pictures go there too.
+  sends a before/after strip. The work runs in a hidden Hermes session on your normal model; when
+  it falls back to your open chat it runs as a background subagent, and if you configured
+  delegation to use a different model or provider, the pictures go there too.
 - `generate` additionally sends a crop of the area around the mark to Hermes's
   `image_generate` tool, which forwards it to the image provider you configured. Retouch then
   downloads the result: only over https, only from a public address, at most 40 MB. Your provider's

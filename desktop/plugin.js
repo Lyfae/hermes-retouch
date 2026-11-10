@@ -330,12 +330,69 @@ async function fromClipboard(button, onOpened) {
   host.notify({ kind: 'info', message: `Retouch: there is no image on the clipboard. ${COPY_HOW}` })
 }
 
+// Retouch works in hidden sessions of its own, one per project for as long as the app runs, so a
+// Send never types into the user's chat. `ownSessions`: project id -> gateway session id.
+// `inFlight`: session id -> the marks handed to it and how many turns are still to finish.
+const ownSessions = new Map()
+const inFlight = new Map()
+
+async function submitToOwnSession(project, prompt, pins) {
+  if (typeof host.request !== 'function') return false
+  // Second pass: the remembered session is gone (gateway restart), so make a new one.
+  for (let pass = 0; pass < 2; pass++) {
+    try {
+      let session = ownSessions.get(project.id)
+      if (!session) {
+        const made = await host.request('session.create', { title: `Retouch · ${project.title} · ${stamp()}`, hidden: true })
+        session = made?.session_id
+        if (!session) return false
+        ownSessions.set(project.id, session)
+      }
+      await host.request('prompt.submit', { session_id: session, text: prompt })
+      const flight = inFlight.get(session) || { projectId: project.id, pins: new Set(), turns: 0 }
+      pins.forEach(n => flight.pins.add(n))
+      flight.turns += 1
+      inFlight.set(session, flight)
+      return true
+    } catch {
+      ownSessions.delete(project.id)
+    }
+  }
+  return false
+}
+
+// A turn in one of Retouch's own sessions ended. Its chat is hidden, so a mark the agent left
+// waiting would wait forever with no word: hand queued ones back and say what happened.
+async function ownTurnEnded(event) {
+  const flight = inFlight.get(event?.session_id)
+  if (!flight) return
+  const failed = event.type === 'error' || Boolean(event.payload?.error)
+  flight.turns = failed ? 0 : flight.turns - 1
+  if (flight.turns > 0) return
+  inFlight.delete(event.session_id)
+  try {
+    const project = await rest(`/projects/${flight.projectId}`)
+    const left = project.pins.filter(p => flight.pins.has(p.number) && statusOf(p.status).busy)
+    if (!left.length) return
+    await Promise.all(
+      left.filter(p => p.status === 'queued').map(p => rest(`/projects/${project.id}/pins/${p.number}/action`, { method: 'POST', body: { action: 'unsend' } }))
+    )
+    refresh()
+    const why = String(event.payload?.error || event.payload?.message || '').slice(0, 200)
+    const marks = left.map(p => `#${p.number}`).join(', ')
+    host.notify({ kind: 'warning', message: `Retouch: Hermes stopped before finishing ${marks}.${why ? ` ${why}` : ''} Send again to retry.` })
+  } catch {
+    // The project was closed or discarded meanwhile; nothing is left to report on.
+  }
+}
+
 async function sendToAgent(project, numbers) {
   const open = project.pins.filter(p => p.status === 'open' && (!numbers || numbers.includes(p.number))).map(p => p.number)
   if (!open.length) return
   // Queue first, then hand the chat the request: an agent that starts instantly must find the marks queued.
   const queued = await act(() => rest(`/projects/${project.id}/send`, { method: 'POST', body: { pins: open } }))
   if (!queued?.prompt) return
+  if (queued.own_session_prompt && (await submitToOwnSession(project, queued.own_session_prompt, queued.queued))) return
   const sent = await host.composer.submit(host.state.activeSessionId.get() ?? null, queued.prompt)
   if (sent) return
   await act(() =>
@@ -1462,6 +1519,8 @@ export default {
     api = ctx
     ctx.onEvent(EVENT, () => refresh())
     ctx.onDispose(() => closeTile?.())
+    ctx.onEvent('message.complete', ownTurnEnded)
+    ctx.onEvent('error', ownTurnEnded)
     ctx.registerMany([
       {
         id: 'toggle',

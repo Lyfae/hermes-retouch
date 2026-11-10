@@ -154,9 +154,13 @@ def pin_action(project_id: str, number: int, body: ActionIn) -> dict[str, Any]:
 def send(project_id: str, body: SendIn) -> dict[str, Any]:
     queued = _call(_ws().send, project_id, body.pins)
     marks = ", ".join(f"#{n}" for n in queued)
-    return {"queued": queued,
-            "prompt": f"Retouch project {project_id}: please work on mark{'s' if len(queued) > 1 else ''} {marks}. "
-                      f"Start with retouch_get."}
+    prompt = (f"Retouch project {project_id}: please work on mark{'s' if len(queued) > 1 else ''} {marks}. "
+              f"Start with retouch_get.")
+    # The pane sends ``own_session_prompt`` to a hidden session of its own, and ``prompt`` to the
+    # user's open chat when it cannot make one.
+    return {"queued": queued, "prompt": prompt,
+            "own_session_prompt": prompt + " This is Retouch's own session and nobody reads it: do the work here "
+                                           "yourself, without a subagent, and say everything through retouch_reply."}
 
 
 @router.post("/projects/{project_id}/revert")
