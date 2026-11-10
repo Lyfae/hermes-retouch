@@ -330,41 +330,91 @@ async function fromClipboard(button, onOpened) {
   host.notify({ kind: 'info', message: `Retouch: there is no image on the clipboard. ${COPY_HOW}` })
 }
 
-// Retouch works in hidden sessions of its own, one per project for as long as the app runs, so a
-// Send never types into the user's chat. `ownSessions`: project id -> gateway session id.
-// `inFlight`: session id -> the marks handed to it and how many turns are still to finish.
-const ownSessions = new Map()
-const inFlight = new Map()
+// Retouch works in hidden sessions of its own, so a Send never types into the user's chat. Each
+// group of marks gets its own session and they run side by side, at most MAX_PARALLEL at a time;
+// the rest wait their turn. Marks that overlap share one session, because their edits touch the
+// same pixels and have to happen in order.
+const MAX_PARALLEL = 3
+const inFlight = new Map() // session id -> { projectId, pins: [numbers], step }
+const waiting = [] // jobs not started yet: { projectId, title, pins, prompt, chatPrompt }
+const watchers = new Set()
+const changed = () => watchers.forEach(w => w())
+const watchWork = w => (watchers.add(w), () => watchers.delete(w))
 
-async function submitToOwnSession(project, prompt, pins) {
-  if (typeof host.request !== 'function') return false
-  // Second pass: the remembered session is gone (gateway restart), so make a new one.
-  for (let pass = 0; pass < 2; pass++) {
-    const choice = chosenModel()
-    const key = `${project.id}|${choice ? `${choice.provider}/${choice.model}` : ''}`
+const touches = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+
+// Split marks into groups where no mark of one group overlaps a mark of another.
+function overlapGroups(pins) {
+  const groups = []
+  for (const pin of pins) {
+    const box = bounds(pin.shape, pin.geom)
+    const hit = groups.filter(g => g.some(m => touches(m.box, box)))
+    const merged = [...hit.flat(), { number: pin.number, box }]
+    for (const g of hit) groups.splice(groups.indexOf(g), 1)
+    groups.push(merged)
+  }
+  return groups.map(g => g.map(m => m.number).sort((x, y) => x - y))
+}
+
+const unsend = (projectId, pins) =>
+  Promise.all(pins.map(n => rest(`/projects/${projectId}/pins/${n}/action`, { method: 'POST', body: { action: 'unsend' } }).catch(() => null)))
+
+async function startJob(job) {
+  const choice = chosenModel()
+  try {
+    const made = await host.request('session.create', {
+      title: `Retouch · ${job.title} · ${job.pins.map(n => `#${n}`).join(' ')} · ${stamp()}`,
+      hidden: true,
+      ...(choice ? { model: choice.model, provider: choice.provider } : {})
+    })
+    if (!made?.session_id) throw new Error('no session')
+    // Claim the slot before the prompt goes out: its first events can beat the reply.
+    inFlight.set(made.session_id, { projectId: job.projectId, pins: job.pins, step: '' })
     try {
-      let session = ownSessions.get(key)
-      if (!session) {
-        const made = await host.request('session.create', {
-          title: `Retouch · ${project.title} · ${stamp()}`,
-          hidden: true,
-          ...(choice ? { model: choice.model, provider: choice.provider } : {})
-        })
-        session = made?.session_id
-        if (!session) return false
-        ownSessions.set(key, session)
-      }
-      await host.request('prompt.submit', { session_id: session, text: prompt })
-      const flight = inFlight.get(session) || { projectId: project.id, pins: new Set(), turns: 0 }
-      pins.forEach(n => flight.pins.add(n))
-      flight.turns += 1
-      inFlight.set(session, flight)
-      return true
-    } catch {
-      ownSessions.delete(key)
+      await host.request('prompt.submit', { session_id: made.session_id, text: job.prompt })
+    } catch (error) {
+      inFlight.delete(made.session_id)
+      throw error
+    }
+  } catch {
+    // No session of our own (an older app or gateway): the open chat does the work, as before.
+    const sent = await host.composer.submit(host.state.activeSessionId.get() ?? null, job.chatPrompt)
+    if (!sent) {
+      await unsend(job.projectId, job.pins)
+      refresh()
+      host.notify({ kind: 'warning', message: 'Retouch: could not start Hermes on its own; open a chat next to this pane, then send again' })
     }
   }
-  return false
+  changed()
+}
+
+let starting = 0 // jobs between leaving `waiting` and holding a session: they count against the limit
+
+function pump() {
+  while (waiting.length && inFlight.size + starting < MAX_PARALLEL) {
+    starting += 1
+    startJob(waiting.shift()).finally(() => {
+      starting -= 1
+      pump()
+    })
+  }
+  changed()
+}
+
+// A session is finished when its turn ends, or (should that word never arrive) when the project
+// shows none of its marks busy any more. Either way its slot goes to the next job.
+function finish(session) {
+  if (inFlight.delete(session)) pump()
+}
+
+function settle(project) {
+  for (const [session, flight] of inFlight) {
+    if (flight.projectId !== project.id) continue
+    const busy = project.pins.some(p => flight.pins.includes(p.number) && statusOf(p.status).busy)
+    // `seen`: the marks were busy at least once, so "not busy" means done, not "not started yet".
+    if (busy) flight.seen = true
+    else if (flight.seen) finish(session)
+  }
 }
 
 // Which model does the work: null means the profile's default. Kept per profile by the app.
@@ -441,7 +491,7 @@ function ModelPicker() {
   })
 }
 
-// What Hermes is doing right now in a project's own session, for the banner over the picture.
+// What a session is doing right now, for the banner over the picture.
 const STEPS = {
   retouch_get: 'looking at the picture',
   retouch_edit: 'editing',
@@ -450,27 +500,37 @@ const STEPS = {
   image_generate: 'generating new pixels',
   skill_view: 'reading how Retouch works'
 }
-const activity = new Map() // project id -> step text
-const watchers = new Set()
-function setActivity(projectId, step) {
-  if (step) activity.set(projectId, step)
-  else activity.delete(projectId)
-  watchers.forEach(w => w())
-}
-const watchActivity = w => (watchers.add(w), () => watchers.delete(w))
 
 function ownToolStarted(event) {
   const flight = inFlight.get(event?.session_id)
-  if (flight) setActivity(flight.projectId, STEPS[event.payload?.name] || 'thinking')
+  if (!flight) return
+  flight.step = STEPS[event.payload?.name] || 'thinking'
+  changed()
 }
 
-// Over the picture, where it cannot be missed: which marks Hermes has and what it is doing.
+// One line per piece of work on this project: marks a session has, marks waiting for a free
+// session, and marks something else is working on (the chat, another window).
+function workLines(project) {
+  const busy = new Set(project.pins.filter(p => statusOf(p.status).busy).map(p => p.number))
+  const lines = []
+  const take = (pins, text, active) => {
+    const mine = pins.filter(n => busy.delete(n))
+    if (mine.length) lines.push({ marks: mine.map(n => `#${n}`).join(', '), text, active })
+  }
+  for (const flight of inFlight.values()) if (flight.projectId === project.id) take(flight.pins, flight.step || 'starting', true)
+  for (const job of waiting) if (job.projectId === project.id) take(job.pins, 'waiting for a free slot', false)
+  for (const n of [...busy]) take([n], project.pins.find(p => p.number === n).status === 'working' ? 'working' : 'sent', true)
+  return lines
+}
+
+let workVersion = 0
+watchers.add(() => (workVersion += 1))
+
+// Over the picture, where it cannot be missed: every piece of work in progress and its step.
 function WorkingBanner({ project }) {
-  const step = useSyncExternalStore(watchActivity, () => activity.get(project.id) || '')
-  const busy = project.pins.filter(p => statusOf(p.status).busy)
-  if (!busy.length) return null
-  const marks = busy.map(p => `#${p.number}`).join(', ')
-  const started = busy.some(p => p.status === 'working') || step
+  useSyncExternalStore(watchWork, () => workVersion)
+  const lines = workLines(project)
+  if (!lines.length) return null
   return jsxs('div', {
     role: 'status',
     style: {
@@ -479,12 +539,11 @@ function WorkingBanner({ project }) {
       left: '50%',
       transform: 'translateX(-50%)',
       display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      padding: '7px 14px',
-      borderRadius: 99,
+      flexDirection: 'column',
+      gap: 4,
+      padding: '8px 14px',
+      borderRadius: 14,
       fontSize: 13,
-      fontWeight: 500,
       whiteSpace: 'nowrap',
       color: 'var(--ui-text-primary)',
       background: 'color-mix(in srgb, var(--ui-bg-elevated) 94%, transparent)',
@@ -495,9 +554,18 @@ function WorkingBanner({ project }) {
       zIndex: 3
     },
     children: [
-      jsx(GlyphSpinner, { ariaLabel: 'Working' }),
-      started ? `Hermes is working on ${marks}` : `Sent ${marks} to Hermes, starting`,
-      step && jsx('span', { style: { fontWeight: 400, color: 'var(--ui-text-tertiary)' }, children: `· ${step}` })
+      lines.length > 1 &&
+        jsx('div', { style: { fontSize: 11, color: 'var(--ui-text-tertiary)' }, children: `Hermes is working on ${lines.length} things` }, 'head'),
+      ...lines.map(line =>
+        jsxs('div', {
+          style: { display: 'flex', alignItems: 'center', gap: 8, opacity: line.active ? 1 : 0.6 },
+          children: [
+            line.active ? jsx(GlyphSpinner, { ariaLabel: 'Working' }) : jsx('span', { style: { width: 14, textAlign: 'center' }, children: '·' }),
+            jsx('span', { style: { fontWeight: 500 }, children: lines.length > 1 ? line.marks : `Hermes is working on ${line.marks}` }),
+            jsx('span', { style: { color: 'var(--ui-text-tertiary)' }, children: line.text })
+          ]
+        }, line.marks)
+      )
     ]
   })
 }
@@ -507,18 +575,12 @@ function WorkingBanner({ project }) {
 async function ownTurnEnded(event) {
   const flight = inFlight.get(event?.session_id)
   if (!flight) return
-  const failed = event.type === 'error' || Boolean(event.payload?.error)
-  flight.turns = failed ? 0 : flight.turns - 1
-  if (flight.turns > 0) return
-  inFlight.delete(event.session_id)
-  setActivity(flight.projectId, null)
+  finish(event.session_id)
   try {
     const project = await rest(`/projects/${flight.projectId}`)
-    const left = project.pins.filter(p => flight.pins.has(p.number) && statusOf(p.status).busy)
+    const left = project.pins.filter(p => flight.pins.includes(p.number) && statusOf(p.status).busy)
     if (!left.length) return
-    await Promise.all(
-      left.filter(p => p.status === 'queued').map(p => rest(`/projects/${project.id}/pins/${p.number}/action`, { method: 'POST', body: { action: 'unsend' } }))
-    )
+    await unsend(project.id, left.filter(p => p.status === 'queued').map(p => p.number))
     refresh()
     const why = String(event.payload?.error || event.payload?.message || '').slice(0, 200)
     const marks = left.map(p => `#${p.number}`).join(', ')
@@ -529,18 +591,18 @@ async function ownTurnEnded(event) {
 }
 
 async function sendToAgent(project, numbers) {
-  const open = project.pins.filter(p => p.status === 'open' && (!numbers || numbers.includes(p.number))).map(p => p.number)
+  const open = project.pins.filter(p => p.status === 'open' && (!numbers || numbers.includes(p.number)))
   if (!open.length) return
-  // Queue first, then hand the chat the request: an agent that starts instantly must find the marks queued.
-  const queued = await act(() => rest(`/projects/${project.id}/send`, { method: 'POST', body: { pins: open } }))
-  if (!queued?.prompt) return
-  if (queued.own_session_prompt && (await submitToOwnSession(project, queued.own_session_prompt, queued.queued))) return
-  const sent = await host.composer.submit(host.state.activeSessionId.get() ?? null, queued.prompt)
-  if (sent) return
-  await act(() =>
-    Promise.all(queued.queued.map(n => rest(`/projects/${project.id}/pins/${n}/action`, { method: 'POST', body: { action: 'unsend' } })))
-  )
-  host.notify({ kind: 'warning', message: 'Retouch: open a chat next to this pane, then send again' })
+  const own = typeof host.request === 'function'
+  // Without sessions of our own everything goes to the chat as one request, as before.
+  const groups = own ? overlapGroups(open) : [open.map(p => p.number)]
+  for (const pins of groups) {
+    // Queue first, then hand over the request: an agent that starts instantly must find the marks queued.
+    const queued = await act(() => rest(`/projects/${project.id}/send`, { method: 'POST', body: { pins } }))
+    if (!queued?.prompt) continue
+    waiting.push({ projectId: project.id, title: project.title, pins: queued.queued, prompt: queued.own_session_prompt || queued.prompt, chatPrompt: queued.prompt })
+  }
+  pump()
 }
 
 async function exportImage(project, format, version) {
@@ -1463,6 +1525,7 @@ function Workbench({ projectId, onOpened, onClose }) {
     const before = was.current.id === project.id ? was.current.status : new Map()
     const back = project.pins.filter(p => statusOf(before.get(p.number)).busy && (p.status === 'needs_review' || p.status === 'question'))
     was.current = { id: project.id, status: new Map(project.pins.map(p => [p.number, p.status])) }
+    settle(project)
     if (!back.length) return
     for (const p of back) {
       host.notify({

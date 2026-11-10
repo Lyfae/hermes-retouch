@@ -19,7 +19,9 @@ down (Loop and Notes included) as its context, and reply in chat with one line (
 #1 and #2 in the Retouch pane"). The subagent has to SEE the pictures: use a model with vision. Do
 the work inline only when `delegate_task` is unavailable, the user asks you to, or the request says
 it is Retouch's own session (the pane made a hidden session just for this work; nobody reads its
-chat, so `retouch_reply` is the only way to tell the user anything). Finish one
+chat, so `retouch_reply` is the only way to tell the user anything; the pane runs several such
+sessions side by side, one per group of marks, so work only the marks your request names and
+expect the picture to gain other marks' edits while you work). Finish one
 request on a project before starting the next. When the subagent reports back, relay its
 `remaining_issues` in one or two sentences; do not repeat what the pane already shows.
 

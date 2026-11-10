@@ -160,7 +160,9 @@ def send(project_id: str, body: SendIn) -> dict[str, Any]:
     # user's open chat when it cannot make one.
     return {"queued": queued, "prompt": prompt,
             "own_session_prompt": prompt + " This is Retouch's own session and nobody reads it: do the work here "
-                                           "yourself, without a subagent, and say everything through retouch_reply."}
+                                           "yourself, without a subagent, and say everything through retouch_reply. Other "
+                                           "sessions may be editing other marks of this project right now: "
+                                           "touch only the marks named here."}
 
 
 @router.post("/projects/{project_id}/revert")

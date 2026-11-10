@@ -14,8 +14,9 @@ review, and four agent tools Hermes uses to do the work.
 - **Marks.** Draw with the pen, a box, an ellipse or a lasso, or drop a note at a spot. Each mark
   has an intent (fix, remove, enhance, ask) and a note in your own words. A pen stroke whose ends
   meet is a loop: the pane tints its inside, because Hermes may change everything inside it.
-- **One thread per mark.** Send the marks and Hermes works on them in a hidden session of Retouch's
-  own: nothing is typed into your chat, and the pane shows progress.
+- **One thread per mark.** Send the marks and Hermes works on them in hidden sessions of Retouch's
+  own: nothing is typed into your chat. Marks that do not overlap are worked on side by side, up to
+  three at a time; a banner over the picture shows each one and the step it is on.
   Its replies, questions and your answers stay attached to the mark they are about.
 - **Edits stay inside the marks.** Every result is blended through the mark's mask and compared
   with the previous version. An edit that changes even one pixel outside its mark is refused and
