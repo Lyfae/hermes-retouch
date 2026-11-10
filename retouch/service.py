@@ -15,9 +15,6 @@ import shutil
 import socket
 import sqlite3
 import ssl
-import subprocess
-import sys
-import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -242,6 +239,8 @@ class Workspace:
             got = ingest_mod.ingest(data)
         except ingest_mod.IngestError as exc:
             raise RetouchError(str(exc)) from None
+        if scratch:
+            self.sweep_scratch()
         project_id = store.new_id("rt")
         pdir = self.project_dir(project_id)
         pdir.mkdir(parents=True)
@@ -258,40 +257,8 @@ class Workspace:
                 store.set_session(conn, project_id, session_id)
         return project
 
-    # -- screenshots: scratch projects the user keeps or discards -------------------------------------
+    # -- scratch projects: pasted images (screenshots) the user keeps or discards --------------------
     SCRATCH_TTL = 24 * 3600
-    # Under the 60 s the plugin host allows a buffered request; the pane shows the hint for longer.
-    PICKER_TIMEOUT = 55
-
-    @staticmethod
-    def can_screenshot() -> bool:
-        return sys.platform == "darwin" and shutil.which("screencapture") is not None
-
-    def screenshot(self, *, session_id: str | None = None) -> dict | None:
-        """Let the user pick a region with the OS screenshot tool and open it as a scratch project.
-        Returns None when they cancel. macOS only (``screencapture -i``); elsewhere, paste."""
-        if not self.can_screenshot():
-            raise RetouchError("screenshots from Retouch work on macOS only; take one with your OS tool and paste it")
-        self.sweep_scratch()
-        with tempfile.TemporaryDirectory(prefix="retouch-shot-") as tmp:
-            path = Path(tmp) / "shot.png"
-            try:
-                # -i: interactive region/window pick; the user's Escape exits 0 and leaves no file
-                run = subprocess.run(["screencapture", "-i", str(path)], check=False, capture_output=True,
-                                     text=True, timeout=self.PICKER_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                raise RetouchError(f"no region was picked within {self.PICKER_TIMEOUT} s; try again") from None
-            except OSError as exc:
-                raise RetouchError(f"could not start the screenshot tool: {exc}") from None
-            if run.returncode != 0:
-                detail = (run.stderr or "").strip() or f"exit code {run.returncode}"
-                raise RetouchError(f"the screenshot tool failed: {detail}. If this is the first time, allow Screen "
-                                   "Recording for the Hermes gateway in System Settings > Privacy & Security")
-            if not path.is_file():
-                return None
-            data = path.read_bytes()
-        stamp = time.strftime("%Y-%m-%d-%H.%M.%S")
-        return self.create_project(f"Screenshot-{stamp}.png", data, session_id=session_id, scratch=True)
 
     def keep(self, project_id: str) -> dict:
         with self.db() as conn:

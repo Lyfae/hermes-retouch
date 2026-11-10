@@ -72,12 +72,12 @@ routes are loaded once per gateway process.
 
 ## Using it
 
-1. Open an image in the Retouch window: the button, drag and drop, paste with ⌘V, or **Screenshot**.
-   Screenshot appears only when the gateway runs on this Mac: it opens the system region picker,
-   and the capture lands as a *scratch* project ("Screenshot · kept once you mark, edit or save
-   it"). Marking it, editing it, **Keep** or **Save** makes it permanent; **Discard** deletes it.
-   Scratch projects you never marked, edited or kept are deleted a day later, the next time you
-   press Screenshot. Elsewhere, ⌘⇧⌃4 copies a region of the screen; paste it with ⌘V.
+1. Open an image in the Retouch window: **Open an image**, drag and drop, or bring one in from the
+   clipboard with ⌘V or **From clipboard**. For a screenshot, press ⌘⇧⌃4 (macOS) or Win+Shift+S
+   (Windows) to copy an area of the screen, then paste. An image from the clipboard lands as a
+   *scratch* project ("Pasted · kept once you mark, edit or save it"). Marking it, editing it,
+   **Keep** or **Save** makes it permanent; **Discard** deletes it. Scratch projects you never
+   marked, edited or kept are deleted a day later, the next time you paste.
 2. Pick a tool from the toolbar: Select **V**, Pen **P**, Box **R**, Ellipse **E**, Lasso **L**,
    Note **T**. Draw on the image, choose an intent, write what you want, and press ⌘↩.
 3. Click **Send**. The pane asks Hermes in the open chat to work on your marks.
@@ -115,15 +115,11 @@ Only you close a mark. Hermes can mark it as working, ready for review, or a que
 - Text inside a picture is treated as picture content. Hermes is told never to follow it, and the
   tools cannot read or write outside the project: `from_file` reads only the project's `work`
   folder and exports go only to its `exports` folder.
-- **Screenshot** (macOS, local gateway only) runs the system `screencapture -i` picker on the
-  machine the gateway runs on and reads the one file it writes to a temporary folder, for at most
-  55 seconds. This is Retouch's only subprocess; nothing is captured without you choosing the
-  region, and the pane hides the button when your gateway is remote. macOS asks once for Screen
-  Recording permission, and because Hermes starts its gateway through `osascript`, the permission
-  it asks for covers `osascript` as a whole. If you would rather not grant that, press ⌘⇧⌃4 and
-  paste with ⌘V instead: it needs no permission. Untouched screenshot projects
-  are the only thing Retouch ever deletes on its own (see Using it); Discard refuses a kept project.
-- Retouch makes no other network calls and runs no other shell commands,
+- Retouch never captures your screen and needs no Screen Recording permission. Screenshots come
+  in through the clipboard: your system's own tool copies, you paste. The clipboard is read only
+  when you press ⌘V or **From clipboard**. Untouched pasted projects are the only thing Retouch
+  ever deletes on its own (see Using it); Discard refuses a kept project.
+- Retouch makes no other network calls, runs no shell commands or other programs,
   stores no credentials and sends no telemetry.
 
 ## Development

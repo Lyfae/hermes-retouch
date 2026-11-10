@@ -97,9 +97,10 @@ def list_projects() -> dict[str, Any]:
 
 
 @router.post("/projects")
-def create_project(file: UploadFile = File(...), session_id: Optional[str] = None) -> dict[str, Any]:
+def create_project(file: UploadFile = File(...), session_id: Optional[str] = None, scratch: bool = False) -> dict[str, Any]:
+    """``scratch``: a pasted image (a screenshot off the clipboard) the user has not decided to keep."""
     data = file.file.read(svc.ingest_mod.MAX_BYTES + 1)
-    return _call(_ws().create_project, file.filename or "image", data, session_id=session_id)
+    return _call(_ws().create_project, file.filename or "image", data, session_id=session_id, scratch=scratch)
 
 
 @router.get("/projects/{project_id}")
@@ -173,22 +174,6 @@ def export(project_id: str, body: ExportIn) -> dict[str, Any]:
     path = _call(_ws().export_and_keep, project_id, version_id=body.version, fmt=body.format, quality=body.quality,
                  max_side=body.max_side, strip_gps=body.strip_gps)
     return {"path": str(path), "name": path.name}
-
-
-@router.get("/capabilities")
-def capabilities() -> dict[str, Any]:
-    return {"screenshot": _ws().can_screenshot()}
-
-
-class ScreenshotIn(BaseModel):
-    session_id: Optional[str] = None
-
-
-@router.post("/screenshot")
-def screenshot(body: ScreenshotIn) -> dict[str, Any]:
-    """Opens the OS region picker on the gateway host; the capture becomes a scratch project."""
-    project = _call(_ws().screenshot, session_id=body.session_id)
-    return {"project": project}  # null when the user cancelled the picker
 
 
 @router.post("/projects/{project_id}/keep")

@@ -1,11 +1,9 @@
-"""A screenshot opens as a scratch project: kept only when the user says so (Keep, Save, or by
+"""A pasted image (a screenshot off the clipboard) opens as a scratch project: kept only when the user says so (Keep, Save, or by
 working on it), otherwise it goes."""
 import io
 import time
-from types import SimpleNamespace
 
 import pytest
-from PIL import Image
 
 from conftest import noise
 from retouch import service
@@ -22,53 +20,21 @@ def png(size=(64, 48), seed=3):
     return buf.getvalue()
 
 
-def fake_picker(monkeypatch, run):
-    """Stand in for macOS `screencapture`; `run(cmd)` decides what it leaves behind and returns."""
-    fake = type("S", (), {"run": staticmethod(lambda cmd, **k: run(cmd)),
-                          "TimeoutExpired": service.subprocess.TimeoutExpired})
-    monkeypatch.setattr(service, "subprocess", fake)
-    monkeypatch.setattr(service.Workspace, "can_screenshot", staticmethod(lambda: True))
-
-
-def captured(cmd):
-    Image.open(io.BytesIO(png())).save(cmd[-1])
-    return SimpleNamespace(returncode=0, stderr="")
-
-
-def cancelled(_cmd):
-    return SimpleNamespace(returncode=0, stderr="")
-
-
-def test_a_screenshot_is_a_scratch_project_until_kept(ws, monkeypatch):
-    fake_picker(monkeypatch, captured)
-    proj = ws.screenshot()
+def test_a_pasted_image_is_a_scratch_project_until_kept(ws):
+    proj = ws.create_project("Screenshot-1.png", png(), scratch=True)
     assert proj["scratch"] is True
-    assert proj["title"].startswith("Screenshot-")
     assert ws.projects()[0]["scratch"] is True
-    kept = ws.keep(proj["id"])
-    assert kept["scratch"] is False
+    assert ws.keep(proj["id"])["scratch"] is False
 
 
-def test_cancelling_the_picker_opens_nothing(ws, monkeypatch):
-    fake_picker(monkeypatch, cancelled)
-    assert ws.screenshot() is None
-    assert ws.projects() == []
-
-
-def test_a_failed_capture_is_an_error_not_a_cancel(ws, monkeypatch):
-    fake_picker(monkeypatch, lambda _cmd: SimpleNamespace(returncode=1, stderr="could not create image from display"))
-    with pytest.raises(service.RetouchError, match="could not create image"):
-        ws.screenshot()
-    assert ws.projects() == []
-
-
-def test_a_picker_left_open_too_long_is_an_error(ws, monkeypatch):
-    def hang(cmd):
-        raise service.subprocess.TimeoutExpired(cmd, 55)
-
-    fake_picker(monkeypatch, hang)
-    with pytest.raises(service.RetouchError, match="within"):
-        ws.screenshot()
+def test_pasting_sweeps_old_untouched_pastes(ws):
+    old = ws.create_project("old.png", png(), scratch=True)
+    with ws.db() as conn:
+        conn.execute("UPDATE projects SET updated_at = ?", (time.time() - ws.SCRATCH_TTL - 60,))
+        conn.commit()
+    new = ws.create_project("new.png", png(seed=4), scratch=True)
+    assert [p["id"] for p in ws.projects()] == [new["id"]]
+    assert not ws.project_dir(old["id"]).exists()
 
 
 def test_discard_removes_the_project_and_its_files(ws):
@@ -120,9 +86,3 @@ def test_only_untouched_old_scratch_projects_are_swept(ws):
     assert swept == [old["id"]]
     assert {p["id"] for p in ws.projects()} == {kept["id"], fresh["id"]}
     assert not ws.project_dir(old["id"]).exists()
-
-
-def test_without_a_picker_the_user_is_told_to_paste(ws, monkeypatch):
-    monkeypatch.setattr(service.Workspace, "can_screenshot", staticmethod(lambda: False))
-    with pytest.raises(service.RetouchError, match="paste"):
-        ws.screenshot()

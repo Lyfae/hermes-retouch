@@ -124,7 +124,7 @@ Not verified: images larger than 96 px (the code is size-agnostic but the proof 
 region check with a stand-in generator, but crop, spill and download are not); chains of several
 ops in one edit; `restore_status` after a failed edit (its `status = 'working'` guard matters
 only with concurrent writers); concurrent callers in general (`add_version`'s `expected_parent`
-conflict is reached only by the retry loop); screenshot, keep, discard and sweep (unit tests in
+conflict is reached only by the retry loop); pasted (scratch) projects, keep, discard and sweep (unit tests in
 `tests/test_scratch.py` only); what a steered agent or a hostile image provider may reach (files
 outside the project, private network addresses, oversized input: example-based tests in
 `tests/test_hardening.py`, not generated ones); the pane's JavaScript; HEIC/EXIF handling (`tests/`).

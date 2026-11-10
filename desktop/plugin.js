@@ -79,8 +79,8 @@ const TYPING = 'input, textarea, [contenteditable="true"]'
 let api = null // the plugin ctx, set in register()
 
 const rest = (path, opts) => api.rest(path, opts)
-// Project state only. Version images never change once made and capabilities do not change at all,
-// so refetching those on every update would re-download megabytes for nothing.
+// Project state only. Version images never change once made, so refetching those on every update
+// would re-download megabytes for nothing.
 const refresh = () =>
   Promise.all([
     queryClient.invalidateQueries({ queryKey: [...QK, 'project'] }),
@@ -267,57 +267,58 @@ function imageFrom(transfer) {
   return files.find(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name)) || null
 }
 
-async function upload(file, onOpened) {
+// `scratch`: the image came off the clipboard (a screenshot, usually), so it opens as a project the
+// user keeps (Keep, Save, or by marking or editing it) or discards.
+async function upload(file, onOpened, { scratch = false } = {}) {
   if (!file) return
   const bytes = await file.arrayBuffer()
   const session = host.state.activeSessionId.get()
-  const query = session ? `?session_id=${encodeURIComponent(session)}` : ''
+  const query = new URLSearchParams()
+  if (session) query.set('session_id', session)
+  if (scratch) query.set('scratch', 'true')
+  // A bitmap on the clipboard has no name of its own (Chromium calls every one "image.png").
+  const unnamed = !file.name || file.name === 'image.png'
+  const filename = scratch && unnamed ? `Pasted-${stamp()}.png` : file.name || 'pasted.png'
   const project = await act(() =>
-    rest(`/projects${query}`, {
+    rest(`/projects${query.size ? `?${query}` : ''}`, {
       method: 'POST',
-      upload: { filename: file.name || 'pasted.png', contentType: file.type || 'application/octet-stream', bytes },
+      upload: { filename, contentType: file.type || 'application/octet-stream', bytes },
       timeoutMs: 120000
     })
   )
   if (project?.id) onOpened(project.id)
 }
 
-// The OS region picker runs on the gateway host; the capture opens as a scratch project the user
-// keeps (Keep, Save, or by marking or editing it) or discards. Resolves to nothing when they press
-// Escape in the picker.
-async function takeScreenshot(onOpened) {
-  const session = host.state.activeSessionId.get()
-  const res = await act(() => rest('/screenshot', { method: 'POST', body: { session_id: session || null }, timeoutMs: 65000 }))
-  if (res?.project?.id) onOpened(res.project.id)
+function stamp() {
+  const d = new Date()
+  const two = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}-${two(d.getHours())}.${two(d.getMinutes())}.${two(d.getSeconds())}`
 }
 
-// Is the active profile served by a gateway on THIS machine? Unknown (older Desktop) counts as no.
-async function gatewayIsLocal() {
-  if (typeof host.profileRoutes !== 'function') return false
+const IS_MAC = /Mac/i.test(navigator.platform || '')
+const PASTE_KEY = IS_MAC ? '⌘V' : 'Ctrl+V'
+const COPY_HOW = IS_MAC
+  ? 'Copy one first (⌘⇧⌃4 copies an area of the screen).'
+  : 'Copy one first (on Windows, Win+Shift+S copies an area of the screen).'
+
+// Open the image on the clipboard as a scratch project. Retouch never captures the screen itself:
+// the OS tool copies, the user brings it in. Where the app does not let a pane read the clipboard,
+// the button puts focus on the pane and asks for the paste key, which always works.
+async function fromClipboard(button, onOpened) {
+  const pane = button?.closest?.('[tabindex="0"]')
+  let items
   try {
-    const routes = await host.profileRoutes()
-    const profile = host.state.profile?.get?.()
-    // Every route that could be the active one must be local. No match, or a remote among the
-    // matches (two connections can serve a profile of the same name), counts as not local.
-    const mine = routes.filter(r => r.targetProfile === profile || r.profile === profile)
-    return mine.length > 0 && mine.every(r => r.mode === 'local')
+    items = await navigator.clipboard.read()
   } catch {
-    return false
+    pane?.focus({ preventScroll: true })
+    host.notify({ kind: 'info', message: `Retouch: press ${PASTE_KEY} to bring in the image on your clipboard.` })
+    return
   }
-}
-
-// The picker runs on the GATEWAY host. Offer it only when that host is this machine (a local
-// route) and it has the tool; a remote gateway's crosshair would appear on someone else's screen.
-function useCanScreenshot() {
-  const caps = useQuery({
-    queryKey: [...QK, 'capabilities'],
-    queryFn: async () => {
-      const [server, local] = await Promise.all([rest('/capabilities'), gatewayIsLocal()])
-      return { screenshot: Boolean(server?.screenshot) && local }
-    },
-    staleTime: Infinity
-  })
-  return Boolean(caps.data?.screenshot)
+  for (const item of items) {
+    const type = item.types.find(t => t.startsWith('image/'))
+    if (type) return upload(new File([await item.getType(type)], 'image.png', { type }), onOpened, { scratch: true })
+  }
+  host.notify({ kind: 'info', message: `Retouch: there is no image on the clipboard. ${COPY_HOW}` })
 }
 
 async function sendToAgent(project, numbers) {
@@ -388,8 +389,6 @@ function Start({ onOpened }) {
   const input = useRef(null)
   const [over, setOver] = useState(false)
   const { data } = useQuery({ queryKey: [...QK, 'projects'], queryFn: () => rest('/projects') })
-  const canShoot = useCanScreenshot()
-  const [shooting, setShooting] = useState(false)
   const recent = (data?.projects || []).slice(0, 6)
   return jsxs('div', {
     tabIndex: 0,
@@ -414,7 +413,7 @@ function Start({ onOpened }) {
       setOver(false)
       upload(imageFrom(e.dataTransfer), onOpened)
     },
-    onPaste: e => upload(imageFrom(e.clipboardData), onOpened),
+    onPaste: e => upload(imageFrom(e.clipboardData), onOpened, { scratch: true }),
     children: [
       jsx(FilePicker, { inputRef: input, onOpened }),
       jsxs('div', {
@@ -442,28 +441,17 @@ function Start({ onOpened }) {
             style: { display: 'flex', gap: 8 },
             children: [
               jsx(Button, { size: 'sm', onClick: () => input.current?.click(), children: 'Open an image' }),
-              canShoot &&
-                jsxs(Button, {
-                  size: 'sm',
-                  variant: 'secondary',
-                  disabled: shooting,
-                  onClick: async () => {
-                    setShooting(true)
-                    try {
-                      await takeScreenshot(onOpened)
-                    } finally {
-                      setShooting(false)
-                    }
-                  },
-                  children: [shooting ? jsx(GlyphSpinner, { ariaLabel: 'Pick a region' }) : icon(icons.Monitor), shooting ? 'Pick a region…' : 'Screenshot']
-                })
+              jsxs(Button, {
+                size: 'sm',
+                variant: 'secondary',
+                onClick: e => fromClipboard(e.currentTarget, onOpened),
+                children: [icon(icons.Clipboard), 'From clipboard']
+              })
             ]
           }),
           jsx('div', {
             style: { fontSize: 12, color: 'var(--ui-text-quaternary)' },
-            children: canShoot
-              ? 'or drop one here, or paste with ⌘V · a screenshot is kept only if you mark, edit, Keep or Save it'
-              : 'or drop one here, or paste with ⌘V (⌘⇧⌃4 copies a region of the screen)'
+            children: `or drop one here, or paste with ${PASTE_KEY} · a pasted image is kept only if you mark, edit, Keep or Save it`
           })
         ]
       }),
@@ -941,8 +929,6 @@ function IconButton({ label, active = false, children, ...props }) {
 function Header({ project, comparing, setComparing, note, viewing, edits, undo, redo, onOpen, onOpened, onDiscarded }) {
   const working = project.pins.some(p => statusOf(p.status).busy)
   const release = () => setComparing(false)
-  const canShoot = useCanScreenshot()
-  const [shooting, setShooting] = useState(false)
   return jsxs('div', {
     style: {
       height: 40,
@@ -973,7 +959,7 @@ function Header({ project, comparing, setComparing, note, viewing, edits, undo, 
         jsxs('span', {
           style: { display: 'inline-flex', alignItems: 'center', gap: 4, marginRight: 6 },
           children: [
-            jsx('span', { style: { fontSize: 11, color: 'var(--ui-text-quaternary)', whiteSpace: 'nowrap' }, children: 'Screenshot · kept once you mark, edit or save it' }),
+            jsx('span', { style: { fontSize: 11, color: 'var(--ui-text-quaternary)', whiteSpace: 'nowrap' }, children: 'Pasted · kept once you mark, edit or save it' }),
             jsxs(Button, {
               size: 'sm',
               variant: 'ghost',
@@ -1027,21 +1013,8 @@ function Header({ project, comparing, setComparing, note, viewing, edits, undo, 
           })
         ]
       }),
-      canShoot &&
-        jsx(IconButton, {
-          label: shooting ? 'Pick a region…' : 'Screenshot a new image',
-          disabled: shooting,
-          onClick: async () => {
-            setShooting(true)
-            try {
-              await takeScreenshot(onOpened)
-            } finally {
-              setShooting(false)
-            }
-          },
-          children: icon(icons.Monitor)
-        }),
-      jsx(IconButton, { label: 'Open another image', onClick: onOpen, children: icon(icons.FolderOpen) }),
+      jsx(IconButton, { label: 'New image from the clipboard', onClick: e => fromClipboard(e.currentTarget, onOpened), children: icon(icons.Clipboard) }),
+      jsx(IconButton, { label: 'New image from a file', onClick: onOpen, children: icon(icons.FolderOpen) }),
       closeTile && jsx(IconButton, { label: 'Close Retouch', onClick: () => closeTile?.(), children: icon(icons.X) })
     ]
   })
@@ -1367,7 +1340,7 @@ function Workbench({ projectId, onOpened, onClose }) {
       upload(imageFrom(e.dataTransfer), onOpened)
     },
     onPaste: e => {
-      if (!e.target.closest?.(TYPING)) upload(imageFrom(e.clipboardData), onOpened)
+      if (!e.target.closest?.(TYPING)) upload(imageFrom(e.clipboardData), onOpened, { scratch: true })
     },
     style: { position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', outline: 'none', overflow: 'hidden' },
     children: [
@@ -1484,7 +1457,7 @@ export default {
       {
         id: 'toggle',
         area: PALETTE_AREA,
-        data: { id: 'retouch.toggle', label: 'Retouch: open / close', action: 'retouch.toggle', keywords: ['retouch', 'image', 'edit', 'mark', 'screenshot'], run: toggleRetouch }
+        data: { id: 'retouch.toggle', label: 'Retouch: open / close', action: 'retouch.toggle', keywords: ['retouch', 'image', 'edit', 'mark', 'screenshot', 'clipboard'], run: toggleRetouch }
       },
       {
         id: 'key-toggle',
