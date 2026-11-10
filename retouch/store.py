@@ -40,6 +40,10 @@ ADDED_COLUMNS = ((("messages", "issues", "TEXT NOT NULL DEFAULT ''"), ("versions
 STATUSES = ("open", "queued", "working", "needs_review", "question", "resolved", "wont_fix")
 AGENT_SETS = {"working", "needs_review", "question"}
 CLOSED = {"resolved", "wont_fix"}
+# Bounds on what one project can hold, so a runaway caller cannot fill memory or the disk.
+MAX_TEXT = 4000  # characters in a note, a thread message or remaining_issues
+MAX_PINS = 200
+MAX_VERSIONS = 500
 # user action -> (allowed from, resulting status)
 USER_ACTIONS = {
     "send": ({"open"}, "queued"),
@@ -119,10 +123,18 @@ def version(conn, project_id: str, version_id: str | None = None) -> sqlite3.Row
     return row
 
 
+def _text(value: str, what: str, limit: int = MAX_TEXT) -> str:
+    value = str(value or "").strip()
+    if len(value) > limit:
+        raise StoreError(f"{what} is too long (at most {limit} characters)")
+    return value
+
+
 def add_pin(conn, project_id: str, *, shape: str, geom: dict, intent: str = "fix", note: str = "") -> dict:
     require_project(conn, project_id)
     if intent not in ("fix", "remove", "enhance", "ask"):
         raise StoreError("intent must be fix, remove, enhance or ask")
+    note = _text(note, "the note")
     with conn:
         # A number is never reused: versions and the chat transcript refer to marks by number, so a
         # deleted mark's number stays retired. The project keeps the high-water mark; the write lock
@@ -131,12 +143,14 @@ def add_pin(conn, project_id: str, *, shape: str, geom: dict, intent: str = "fix
         row = conn.execute("SELECT last_pin FROM projects WHERE id = ?", (project_id,)).fetchone()
         if row is None:
             raise StoreError(f"no Retouch project {project_id!r}")
+        if conn.execute("SELECT COUNT(*) FROM pins WHERE project_id = ?", (project_id,)).fetchone()[0] >= MAX_PINS:
+            raise StoreError(f"a project holds at most {MAX_PINS} marks; delete some first")
         n = max(row["last_pin"], conn.execute("SELECT COALESCE(MAX(number), 0) FROM pins WHERE project_id = ?",
                                                (project_id,)).fetchone()[0]) + 1
         conn.execute("UPDATE projects SET last_pin = ?, scratch = 0 WHERE id = ?", (n, project_id))
         conn.execute("INSERT INTO pins (project_id, number, shape, geom, intent, note, status, round, result_version, "
                      "created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', 1, NULL, ?)",
-                     (project_id, n, shape, json.dumps(geom), intent, note.strip(), _now()))
+                     (project_id, n, shape, json.dumps(geom), intent, note, _now()))
         _touch(conn, project_id)
     return pin_dict(conn, require_pin(conn, project_id, n))
 
@@ -146,6 +160,8 @@ def update_pin(conn, project_id: str, number: int, **fields: Any) -> dict:
     if pin["status"] in CLOSED:
         raise StoreError(f"mark #{number} is closed; reopen it first")
     allowed = {"note", "intent", "shape", "geom"}
+    if fields.get("note") is not None:
+        fields["note"] = _text(fields["note"], "the note")
     sets = {k: (json.dumps(v) if k == "geom" else v) for k, v in fields.items() if k in allowed and v is not None}
     if not sets:
         return pin_dict(conn, pin)
@@ -215,11 +231,12 @@ def add_message(conn, project_id: str, number: int, author: str, body: str, vers
     """``issues``: what is still visibly wrong after the agent's edit ('' when nothing is)."""
     if author not in ("user", "agent"):
         raise StoreError("author must be user or agent")
-    if not body.strip():
+    body, issues = _text(body, "the message"), _text(issues, "remaining_issues")
+    if not body:
         raise StoreError("message is empty")
     require_pin(conn, project_id, number)
     with conn:
-        _add_message(conn, project_id, number, author, body.strip(), version_id, issues.strip())
+        _add_message(conn, project_id, number, author, body, version_id, issues)
         _touch(conn, project_id)
 
 
@@ -244,6 +261,8 @@ def add_version(conn, project_id: str, *, file: str, author: str, pin: int | Non
         proj = require_project(conn, project_id)
         if expected_parent is not None and proj["current_version"] != expected_parent:
             raise VersionConflict(f"project {project_id} changed while editing")
+        if conn.execute("SELECT COUNT(*) FROM versions WHERE project_id = ?", (project_id,)).fetchone()[0] >= MAX_VERSIONS:
+            raise StoreError(f"this project already holds {MAX_VERSIONS} versions; save it and start a new project")
         seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM versions WHERE project_id = ?", (project_id,)).fetchone()[0]
         conn.execute("INSERT INTO versions (id, project_id, seq, parent, file, author, pin, method, summary, "
                      "outside_changed_px, inside_changed_px, created_at, spill) "
@@ -265,6 +284,9 @@ def revert(conn, project_id: str, *, to_version: str | None = None, pin: int | N
         current = version(conn, project_id)
         if current["parent"] is None:
             raise StoreError("already at the original")
+        if pin is not None and require_pin(conn, project_id, int(pin))["result_version"] != current["id"]:
+            # Stepping back one version would remove a DIFFERENT mark's edit and leave this one's in.
+            raise StoreError(f"mark #{int(pin)}'s edit is not the latest one; undo the later edits first")
         to_version = current["parent"]
     version(conn, project_id, to_version)
     with conn:

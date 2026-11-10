@@ -28,10 +28,15 @@ def _finite(value: Any, name: str) -> float:
     return number
 
 
+MAX_POINTS = 5000  # the pane keeps points 2.5 screen pixels apart, so a real stroke is far below this
+
+
 def _points(geom: dict, minimum: int) -> list[tuple[float, float]]:
     raw = geom.get("points")
     if not isinstance(raw, list) or len(raw) < minimum:
         raise GeometryError(f"points needs at least {minimum} [x, y] pairs")
+    if len(raw) > MAX_POINTS:
+        raise GeometryError(f"a mark holds at most {MAX_POINTS} points")
     points = []
     for i, pair in enumerate(raw):
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:

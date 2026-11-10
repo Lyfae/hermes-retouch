@@ -79,7 +79,13 @@ const TYPING = 'input, textarea, [contenteditable="true"]'
 let api = null // the plugin ctx, set in register()
 
 const rest = (path, opts) => api.rest(path, opts)
-const refresh = () => queryClient.invalidateQueries({ queryKey: QK })
+// Project state only. Version images never change once made and capabilities do not change at all,
+// so refetching those on every update would re-download megabytes for nothing.
+const refresh = () =>
+  Promise.all([
+    queryClient.invalidateQueries({ queryKey: [...QK, 'project'] }),
+    queryClient.invalidateQueries({ queryKey: [...QK, 'projects'] })
+  ])
 
 // ctx.rest rejects with "<status>: <body>", which the IPC bridge wraps as "Error invoking remote
 // method 'hermes:api': Error: 409: {"detail": …}". Show the backend's own sentence, not the wire text.
@@ -178,6 +184,18 @@ function badgeAt(shape, gp) {
   return gp.points.reduce((top, p) => (p[1] < top[1] || (p[1] === top[1] && p[0] < top[0]) ? p : top))
 }
 
+// A stroke of at least 8 points whose ends meet (within two stroke widths or 20% of its extent).
+// Must stay the same rule as retouch/geometry.py brush_is_closed.
+function brushIsClosed(pts, stroke) {
+  if (pts.length < 8) return false
+  const xs = pts.map(p => p[0])
+  const ys = pts.map(p => p[1])
+  const extent = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys))
+  if (extent < stroke * 3) return false
+  const last = pts[pts.length - 1]
+  return Math.hypot(pts[0][0] - last[0], pts[0][1] - last[1]) <= Math.max(stroke * 2, extent * 0.2)
+}
+
 function Shape({ shape, gp, color, selected = false, dashed = false, busy = false, faded = false, hit = false, pin }) {
   const base = { 'data-pin': pin, style: { pointerEvents: hit ? 'all' : 'none', cursor: hit ? 'pointer' : undefined } }
   if (shape === 'brush') {
@@ -190,14 +208,18 @@ function Shape({ shape, gp, color, selected = false, dashed = false, busy = fals
         r: gp.width / 2,
         style: { ...base.style, fill: color, fillOpacity: opacity }
       })
-    return jsx('polyline', {
+    // Ends that meet make a loop, and Hermes may then change everything INSIDE it (the same rule as
+    // geometry.brush_is_closed on the backend), so the pane tints the inside to say so.
+    const loop = brushIsClosed(gp.points, gp.width)
+    return jsx(loop ? 'polygon' : 'polyline', {
       ...base,
       points: pointsAttr(gp.points),
-      fill: 'none',
+      fill: loop ? color : 'none',
+      fillOpacity: loop ? opacity * 0.3 : undefined,
       strokeWidth: gp.width,
       strokeLinecap: 'round',
       strokeLinejoin: 'round',
-      style: { ...base.style, stroke: color, strokeOpacity: opacity, pointerEvents: hit ? 'stroke' : 'none' }
+      style: { ...base.style, stroke: color, strokeOpacity: opacity, pointerEvents: hit ? (loop ? 'all' : 'stroke') : 'none' }
     })
   }
   const props = {
@@ -275,8 +297,10 @@ async function gatewayIsLocal() {
   try {
     const routes = await host.profileRoutes()
     const profile = host.state.profile?.get?.()
-    const route = routes.find(r => r.targetProfile === profile || r.profile === profile) || routes.find(r => r.primary)
-    return route?.mode === 'local'
+    // Every route that could be the active one must be local. No match, or a remote among the
+    // matches (two connections can serve a profile of the same name), counts as not local.
+    const mine = routes.filter(r => r.targetProfile === profile || r.profile === profile)
+    return mine.length > 0 && mine.every(r => r.mode === 'local')
   } catch {
     return false
   }
@@ -310,9 +334,9 @@ async function sendToAgent(project, numbers) {
   host.notify({ kind: 'warning', message: 'Retouch: open a chat next to this pane, then send again' })
 }
 
-async function exportImage(project, format) {
+async function exportImage(project, format, version) {
   const save = captureGatewayFileDownload() // must be captured inside the click, before awaiting
-  const out = await act(() => rest(`/projects/${project.id}/export`, { method: 'POST', body: { format } }))
+  const out = await act(() => rest(`/projects/${project.id}/export`, { method: 'POST', body: { format, ...(version ? { version } : {}) } }))
   if (out?.path) await save(out.path, out.name)
 }
 
@@ -527,7 +551,7 @@ function Message({ m }) {
   })
 }
 
-function pinButtons({ project, pin, reply, action, onClose }) {
+function pinButtons({ project, pin, reply, action, onClose, inPicture }) {
   const st = statusOf(pin.status)
   const base = `/projects/${project.id}/pins/${pin.number}`
   const buttons = []
@@ -538,8 +562,9 @@ function pinButtons({ project, pin, reply, action, onClose }) {
     )
   if (pin.status === 'needs_review' || pin.status === 'question') {
     const answering = pin.status === 'question'
+    // Accepting an edit that Undo took out of the picture would close the mark on nothing.
+    if (inPicture) buttons.push(jsx(Button, { size: 'xs', onClick: () => action('accept', reply), children: 'Accept' }, 'acc'))
     buttons.push(
-      jsx(Button, { size: 'xs', onClick: () => action('accept', reply), children: 'Accept' }, 'acc'),
       jsx(
         Tip,
         {
@@ -558,7 +583,9 @@ function pinButtons({ project, pin, reply, action, onClose }) {
       )
     )
   }
-  if (pin.result_version && !st.closed && !st.busy)
+  // Revert steps back one version, so it is offered only while this mark's edit is the latest one;
+  // with a later edit on top, the header's Undo is the way back.
+  if (pin.result_version && pin.result_version === project.current_version && !st.closed && !st.busy)
     buttons.push(
       jsx(
         Button,
@@ -587,7 +614,10 @@ function PinBubble({ project, pin, onClose }) {
     if (out) setReply('')
     return out
   }
-  const buttons = pinButtons({ project, pin, reply, action, onClose })
+  const { path, at } = versionPath(project)
+  const where = pin.result_version ? path.findIndex(v => v.id === pin.result_version) : 0
+  const inPicture = where >= 0 && where <= at
+  const buttons = pinButtons({ project, pin, reply, action, onClose, inPicture })
 
   return jsxs('div', {
     style: { display: 'flex', flexDirection: 'column', gap: 8 },
@@ -624,6 +654,14 @@ function PinBubble({ project, pin, onClose }) {
           children: `Edge check: what was removed continues past this mark (${spill.join(', ')}). That part stays. Draw a bigger mark to remove it.`
         }),
       st.busy && jsx('div', { style: { fontSize: 12, color: 'var(--ui-text-tertiary)' }, children: 'Hermes is working on this mark…' }),
+      !inPicture &&
+        !st.closed &&
+        jsx('div', {
+          style: WARN,
+          children: where > at
+            ? 'This edit was undone, so it is not in the picture now. Redo brings it back.'
+            : 'This edit was undone and a later edit took its place, so it is not in the picture now.'
+        }),
       reviewing &&
         jsx(Textarea, {
           rows: 2,
@@ -895,7 +933,7 @@ function IconButton({ label, active = false, children, ...props }) {
   })
 }
 
-function Header({ project, comparing, setComparing, note, edits, undo, redo, onOpen, onOpened, onDiscarded }) {
+function Header({ project, comparing, setComparing, note, viewing, edits, undo, redo, onOpen, onOpened, onDiscarded }) {
   const working = project.pins.some(p => statusOf(p.status).busy)
   const release = () => setComparing(false)
   const canShoot = useCanScreenshot()
@@ -964,7 +1002,7 @@ function Header({ project, comparing, setComparing, note, edits, undo, redo, onO
         children: [
           jsx(DropdownMenuTrigger, {
             asChild: true,
-            children: jsxs(Button, { size: 'sm', variant: 'ghost', children: [icon(icons.Download), 'Save', icon(icons.ChevronDown, 12)] })
+            children: jsxs(Button, { size: 'sm', variant: 'ghost', children: [icon(icons.Download), viewing ? 'Save this version' : 'Save', icon(icons.ChevronDown, 12)] })
           }),
           jsx(DropdownMenuContent, {
             align: 'end',
@@ -972,7 +1010,7 @@ function Header({ project, comparing, setComparing, note, edits, undo, redo, onO
               jsxs(
                 DropdownMenuItem,
                 {
-                  onSelect: () => exportImage(project, format),
+                  onSelect: () => exportImage(project, format, viewing),
                   children: [
                     jsx('span', { style: { flex: 1 }, children: `Save as ${label}` }),
                     jsx('span', { style: { fontSize: 11, color: 'var(--ui-text-quaternary)' }, children: hint })
@@ -1250,7 +1288,9 @@ function Workbench({ projectId, onOpened, onClose }) {
   const redo = () => canRedo && step('redo')
 
   const onKeyDown = e => {
-    if (e.target.closest?.(TYPING)) return
+    // A key typed in a note field or in an open menu (menus render elsewhere but their events still
+    // bubble here) belongs to that field or menu, not to the workbench.
+    if (e.target.closest?.(`${TYPING}, [role="menu"], [role="menuitem"]`)) return
     if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
       e.preventDefault()
       if (e.shiftKey) redo()
@@ -1281,6 +1321,7 @@ function Workbench({ projectId, onOpened, onClose }) {
       setDraft(null)
       setSelected(null)
     } else if ((key === 'delete' || key === 'backspace') && selected) {
+      if (comparing || clean || viewing) return // never delete a mark the user cannot see
       const pin = project.pins.find(p => p.number === selected)
       if (pin?.status !== 'open') return
       e.preventDefault()
@@ -1319,7 +1360,7 @@ function Workbench({ projectId, onOpened, onClose }) {
     style: { position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', outline: 'none', overflow: 'hidden' },
     children: [
       jsx(FilePicker, { inputRef: input, onOpened }),
-      jsx(Header, { project, comparing, setComparing, note, edits: at, undo: canUndo ? undo : null, redo: canRedo ? redo : null, onOpen: () => input.current?.click(), onOpened, onDiscarded: onClose }),
+      jsx(Header, { project, comparing, setComparing, note, viewing, edits: at, undo: canUndo ? undo : null, redo: canRedo ? redo : null, onOpen: () => input.current?.click(), onOpened, onDiscarded: onClose }),
       jsxs('div', {
         style: { position: 'relative', flex: 1, minHeight: 0 },
         children: [

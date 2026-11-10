@@ -18,7 +18,8 @@ the ones nobody thinks to write:
 2. **The mark/version state machine is honest.** Only the user closes a mark; a sent mark keeps
    its outline; versions form a tree rooted at the original and are never deleted; every stored
    version is clean against the outline it was edited with; rounds grow only through "needs more
-   work"; a mark number is never reused; Redo undoes Undo and moves only the picture.
+   work"; a mark number is never reused; Redo undoes Undo and moves only the picture; a mark's
+   Revert takes out that mark's own edit and nothing else.
 
 `verify/` checks both with [Hypothesis](https://hypothesis.readthedocs.io): generated inputs
 against the REAL compositing code, and generated sequences of user/agent calls against the REAL
@@ -108,7 +109,8 @@ and fails as stated:
   minute: it needs two edits built on one version).
 - P8 (only when undone): in `store.redo_target`, replace `AND parent = ?` with `AND id != ?`.
 - P8 (marks untouched): in `store.redo`, also `UPDATE pins SET round = round + 1`.
-- revert: remove `status = 'open'` from `store.revert`'s pin update (caught by P2).
+- P9 (reopens): remove `status = 'open'` from `store.revert`'s pin update.
+- P9 (own edit only): in `store.revert`, make the `result_version != current["id"]` refusal `False`.
 
 ## Scope and bounds
 
@@ -123,7 +125,9 @@ region check with a stand-in generator, but crop, spill and download are not); c
 ops in one edit; `restore_status` after a failed edit (its `status = 'working'` guard matters
 only with concurrent writers); concurrent callers in general (`add_version`'s `expected_parent`
 conflict is reached only by the retry loop); screenshot, keep, discard and sweep (unit tests in
-`tests/test_scratch.py` only); the pane's JavaScript; HEIC/EXIF handling (`tests/`).
+`tests/test_scratch.py` only); what a steered agent or a hostile image provider may reach (files
+outside the project, private network addresses, oversized input: example-based tests in
+`tests/test_hardening.py`, not generated ones); the pane's JavaScript; HEIC/EXIF handling (`tests/`).
 
 ## Coverage record
 

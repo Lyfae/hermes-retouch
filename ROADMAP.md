@@ -1,6 +1,6 @@
 # Roadmap
 
-Ideas for after the hackathon submission, in the order they came up.
+Ideas for later, in the order they came up.
 
 ## Before/after diff view
 

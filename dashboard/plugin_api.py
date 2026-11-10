@@ -108,9 +108,10 @@ def get_project(project_id: str) -> dict[str, Any]:
 @router.get("/projects/{project_id}/image")
 def get_image(project_id: str, version: Optional[str] = None, max_px: int = 2048) -> dict[str, Any]:
     """The image for display, downscaled to ``max_px``; ``scale`` maps display pixels back to the original."""
+    max_px = max(64, min(int(max_px), 4096))
     img, row = _call(_ws().load, project_id, version)
     width, height = img.size
-    if max_px and max(width, height) > max_px:
+    if max(width, height) > max_px:
         img = img.copy()
         img.thumbnail((max_px, max_px))
     fmt = "PNG" if img.mode == "RGBA" else "JPEG"

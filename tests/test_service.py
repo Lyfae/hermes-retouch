@@ -86,17 +86,17 @@ def test_generate_without_a_provider_is_a_clear_error(ws, proj):
         ws.edit(proj["id"], n, method="generate", generator=None)
 
 
-def test_from_file_takes_only_the_marked_area(ws, proj, tmp_path):
+def test_from_file_takes_only_the_marked_area(ws, proj):
     n = mark(ws, proj)["number"]
-    other = tmp_path / "agent_full_edit.png"
+    other = ws.work_dir(proj["id"]) / "agent_full_edit.png"
     Image.new("RGB", (320, 240), (0, 0, 0)).save(other)
     ws.edit(proj["id"], n, method="from_file", file=str(other))
     assert outside_unchanged(ws, proj, n)
 
 
-def test_from_file_of_the_wrong_size_is_refused(ws, proj, tmp_path):
+def test_from_file_of_the_wrong_size_is_refused(ws, proj):
     n = mark(ws, proj)["number"]
-    other = tmp_path / "small.png"
+    other = ws.work_dir(proj["id"]) / "small.png"
     Image.new("RGB", (10, 10)).save(other)
     with pytest.raises(service.RetouchError, match="same size"):
         ws.edit(proj["id"], n, method="from_file", file=str(other))
@@ -110,15 +110,13 @@ def test_agent_reply_cannot_resolve(ws, proj):
     assert pin["status"] == "needs_review" and pin["thread"][-1]["author"] == "agent"
 
 
-def test_export_writes_new_files_and_leaves_versions_alone(ws, proj, tmp_path):
+def test_export_writes_new_files_and_leaves_versions_alone(ws, proj):
     n = mark(ws, proj)["number"]
     ws.edit(proj["id"], n, method="adjust", ops=[{"op": "contrast", "value": 0.5}])
-    out_dir = tmp_path / "out"
-    a = ws.export(proj["id"], fmt="jpeg", directory=str(out_dir))
-    b = ws.export(proj["id"], fmt="jpeg", directory=str(out_dir))
+    a = ws.export(proj["id"], fmt="jpeg")
+    b = ws.export(proj["id"], fmt="jpeg")
     assert a != b and a.name == "Trip-Photo-retouched.jpg" and Image.open(a).size == (320, 240)
-    with pytest.raises(service.RetouchError):
-        ws.export(proj["id"], directory="relative/dir")
+    assert a.parent == b.parent == ws.project_dir(proj["id"]) / "exports"
 
 
 def test_pin_off_the_image_is_refused(ws, proj):

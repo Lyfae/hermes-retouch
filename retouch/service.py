@@ -8,14 +8,16 @@ Hermes is imported lazily and only in ``Workspace.current()`` and ``notify()``, 
 from __future__ import annotations
 
 import base64
-import io
+import ipaddress
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -73,23 +75,82 @@ def notify(project_id: str) -> None:
     broadcast_plugin_event(PLUGIN_ID, "project.updated", {"project_id": project_id})
 
 
-def load_image_ref(ref: str) -> Image.Image:
-    """Open an image an image tool returned: a data: URL, an http(s) URL or a local path."""
+def _require_public_https(url: str) -> None:
+    """Refuse a link that is not https or whose host resolves to anything but a public address: the
+    image provider's answer is untrusted, and the gateway can reach localhost and the home network."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
+        raise RetouchError("the image tool returned a link Retouch will not fetch (https only)")
+    try:
+        found = socket.getaddrinfo(parts.hostname, parts.port or 443, type=socket.SOCK_STREAM)
+    except OSError:
+        raise RetouchError("the generated image's host could not be found") from None
+    for info in found:
+        if not ipaddress.ip_address(str(info[4][0]).split("%")[0]).is_global:
+            raise RetouchError("the image tool returned a link to a private address; Retouch will not fetch it")
+
+
+class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _require_public_https(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _inside(path: Path, roots) -> Path | None:
+    """``path`` with symlinks resolved, when it is a file inside one of ``roots``; else None."""
+    try:
+        real = path.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not real.is_file():
+        return None
+    for root in roots:
+        try:
+            if Path(root).resolve() in real.parents:
+                return real
+        except OSError:
+            continue
+    return None
+
+
+def _decode(data: bytes, what: str) -> Image.Image:
+    try:
+        return ingest_mod.ingest(data).image
+    except ingest_mod.IngestError as exc:
+        raise RetouchError(f"{what} could not be used: {exc}") from None
+
+
+def load_image_ref(ref: str, local_roots=()) -> Image.Image:
+    """Open the image an image tool returned: a data: URL, an https URL on a public host, or a file
+    inside ``local_roots`` (where Hermes saves generated images). Errors never repeat the reference,
+    which can carry a signed token."""
     ref = str(ref or "").strip()
     if ref.startswith("data:"):
-        data = base64.b64decode(ref.split(",", 1)[1])
-    elif ref.startswith(("https://", "http://")):
-        with urllib.request.urlopen(urllib.request.Request(ref, headers={"User-Agent": "hermes-retouch"}), timeout=60) as resp:
-            data = resp.read(MAX_FETCH_BYTES + 1)
-        if len(data) > MAX_FETCH_BYTES:
-            raise RetouchError("the generated image is too large")
-    elif ref and Path(ref).expanduser().is_absolute() and Path(ref).expanduser().is_file():
-        data = Path(ref).expanduser().read_bytes()
+        _, sep, payload = ref.partition(",")
+        if not sep or len(payload) > MAX_FETCH_BYTES * 4 // 3 + 4:
+            raise RetouchError("the image tool returned no usable image")
+        try:
+            data = base64.b64decode(payload)
+        except ValueError:
+            raise RetouchError("the image tool returned no usable image") from None
+    elif "://" in ref:
+        _require_public_https(ref)
+        opener = urllib.request.build_opener(_CheckedRedirects)
+        try:
+            with opener.open(urllib.request.Request(ref, headers={"User-Agent": "hermes-retouch"}), timeout=60) as resp:
+                data = resp.read(MAX_FETCH_BYTES + 1)
+        except RetouchError:
+            raise
+        except (OSError, ValueError):
+            raise RetouchError("the generated image could not be downloaded") from None
     else:
-        raise RetouchError("the image tool returned no usable image")
-    img = Image.open(io.BytesIO(data))
-    img.load()
-    return img
+        real = _inside(Path(ref), local_roots) if ref else None
+        if real is None or real.stat().st_size > MAX_FETCH_BYTES:
+            raise RetouchError("the image tool returned no usable image")
+        data = real.read_bytes()
+    if len(data) > MAX_FETCH_BYTES:
+        raise RetouchError("the generated image is too large")
+    return _decode(data, "the generated image")
 
 
 class Workspace:
@@ -116,9 +177,15 @@ class Workspace:
 
     # -- files ------------------------------------------------------------------------------------
     def project_dir(self, project_id: str) -> Path:
-        if not _PID.match(str(project_id)):
+        if not _PID.fullmatch(str(project_id)):
             raise RetouchError(f"{project_id!r} is not a Retouch project id")
         return self.root / "projects" / project_id
+
+    def work_dir(self, project_id: str) -> Path:
+        """Where the agent saves a full-size copy it edited itself; the only place from_file reads."""
+        path = self.project_dir(project_id) / "work"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def _meta_bytes(self, project_id: str, name: str) -> bytes | None:
         path = self.project_dir(project_id) / name
@@ -363,12 +430,16 @@ class Workspace:
 
             return adjust, summary
         if method == "from_file":
-            path = Path(str(file or "")).expanduser()
-            if not path.is_absolute() or not path.is_file():
-                raise RetouchError("file must be an absolute path to a full-size edited copy of the image")
-            src = Image.open(path)
-            src.load()
-            return (lambda base, mask, _report: self._blend(base, src, mask)), f"from {path.name}"
+            # Only a file inside this project's work folder: an agent steered by text in the picture
+            # must not be able to pull some other image on the machine into the project.
+            work = self.work_dir(project_id)
+            real = _inside(Path(str(file or "")), [work])
+            if real is None:
+                raise RetouchError(f"file must be a full-size edited copy saved inside this project's work folder: {work}")
+            if real.stat().st_size > ingest_mod.MAX_BYTES:
+                raise RetouchError("that file is too large")
+            src = _decode(real.read_bytes(), "that file")
+            return (lambda base, mask, _report: self._blend(base, src, mask)), f"from {real.name}"
         if generator is None:
             raise RetouchError("generative edits need an image generation provider (set one up in `hermes tools`)")
         if not note:
@@ -448,7 +519,8 @@ class Workspace:
         return proj, render.overview(img, marks), crops
 
     def export(self, project_id: str, *, version_id: str | None = None, fmt: str = "png", quality: int = 90,
-               max_side: int | None = None, strip_gps: bool = True, directory: str | None = None) -> Path:
+               max_side: int | None = None, strip_gps: bool = True) -> Path:
+        """Always into the project's own exports folder, as a new file."""
         proj = self.project(project_id)
         img, _ = self.load(project_id, version_id)
         try:
@@ -457,10 +529,7 @@ class Workspace:
                                           exif=self._meta_bytes(project_id, "exif.bin"))
         except export_mod.ExportError as exc:
             raise RetouchError(str(exc)) from None
-        dest = Path(directory).expanduser() if directory else self.project_dir(project_id) / "exports"
-        if not dest.is_absolute():
-            raise RetouchError("directory must be an absolute path")
-        return export_mod.write_new(dest, f"{proj['title']}-retouched", data, ext)
+        return export_mod.write_new(self.project_dir(project_id) / "exports", f"{proj['title']}-retouched", data, ext)
 
     def export_and_keep(self, project_id: str, **kwargs) -> Path:
         """Saving a scratch project is the user keeping it."""

@@ -10,6 +10,9 @@ from PIL import ExifTags, Image
 
 FORMATS = {"png": "PNG", "jpeg": "JPEG", "jpg": "JPEG", "webp": "WEBP"}
 _EXT = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
+# DocumentName, ImageDescription, HostComputer, XPTitle..XPSubject; then UserComment and MakerNote
+_IDENTIFYING = (269, 270, 316, 40091, 40092, 40093, 40094, 40095)
+_IDENTIFYING_SUB = (37510, 37500)
 
 
 class ExportError(ValueError):
@@ -27,6 +30,14 @@ def clean_exif(exif_bytes: bytes | None, strip_gps: bool) -> bytes | None:
     exif.pop(ExifTags.Base.Orientation, None)  # pixels are already upright
     if strip_gps:
         exif.pop(ExifTags.IFD.GPSInfo, None)
+        for tag in _IDENTIFYING:  # free-text fields that commonly hold a file path, a name or a device
+            exif.pop(tag, None)
+        try:
+            sub = exif.get_ifd(ExifTags.IFD.Exif)
+        except Exception:
+            sub = {}
+        for tag in _IDENTIFYING_SUB:
+            sub.pop(tag, None)
     return exif.tobytes()
 
 
@@ -42,6 +53,17 @@ def encode(img: Image.Image, fmt: str = "png", *, quality: int = 90, max_side: i
     if pil_fmt is None:
         raise ExportError(f"format must be one of {', '.join(sorted(set(FORMATS) - {'jpg'}))}")
     out = img
+    if max_side is not None:
+        try:
+            max_side = int(max_side)
+        except (TypeError, ValueError):
+            raise ExportError("max_side must be a whole number of pixels") from None
+        if max_side < 16:
+            raise ExportError("max_side must be at least 16 pixels")
+    try:
+        quality = int(quality)
+    except (TypeError, ValueError):
+        raise ExportError("quality must be a whole number from 1 to 100") from None
     if max_side and max(out.size) > int(max_side):
         out = out.copy()
         out.thumbnail((int(max_side), int(max_side)), Image.Resampling.LANCZOS)

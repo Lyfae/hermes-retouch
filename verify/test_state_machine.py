@@ -17,6 +17,8 @@ Promises checked after every step:
       (versions and the chat thread refer to marks by number).
   P8  Redo undoes Undo: it steps to the newest edit built on the current version exactly when one
       exists, changes no mark, and Undo followed at once by Redo is a round trip.
+  P9  A mark's own Revert takes out that mark's edit and nothing else: it is refused while a later
+      edit is on top, and when it goes through the mark is open again with no result.
 
 Not checked here: `restore_status` after a failed edit (its guard matters only with concurrent
 writers, and these runs are sequential); the generate and from_file edit methods (adjust only).
@@ -146,12 +148,26 @@ class RetouchMachine(RuleBasedStateMachine):
     @rule(n=marks, with_pin=st.booleans())
     def revert(self, n, with_pin):
         before = self.pin(n)
+        current = self.project()["current_version"]
+        own = bool(with_pin and before)
         try:
-            self.ws.revert(self.pid, pin=n if (with_pin and before) else None)
+            self.ws.revert(self.pid, pin=n if own else None)
         except (service.RetouchError, store.StoreError):
             return
-        if with_pin and before:
+        if own:
+            assert before["result_version"] == current, f"#{n}'s Revert undid another mark's edit (P9)"
+            after = self.pin(n)
+            assert after["status"] == "open" and after["result_version"] is None, f"#{n}'s Revert did not reopen it (P9)"
             self._note_transition(n, before["status"], "open", by_user=True)
+
+    @rule(n=marks, value=st.floats(0.5, 1))
+    def edit_then_revert(self, n, value):
+        """The common review move, made common here too: Hermes edits a mark, the user reverts it."""
+        self.agent_edits(n, value, "exposure")
+        pin = self.pin(n)
+        if pin is not None and pin["result_version"] == self.project()["current_version"]:
+            self.revert(n, True)
+            assert self.pin(n)["status"] == "open", f"#{n} was reverted but is not open (P9)"
 
     def _marks_snapshot(self):
         return [(p["number"], p["status"], repr(p["geom"]), p["round"], p["result_version"]) for p in self.project()["pins"]]

@@ -10,8 +10,10 @@ review, and four agent tools Hermes uses to do the work.
 ## What it does
 
 - **Marks.** Draw with the pen, a box, an ellipse or a lasso, or drop a note at a spot. Each mark
-  has an intent (fix, remove, enhance, ask) and a note in your own words.
-- **One thread per mark.** Send the marks and Hermes works on them in the chat next to the pane.
+  has an intent (fix, remove, enhance, ask) and a note in your own words. A pen stroke whose ends
+  meet is a loop: the pane tints its inside, because Hermes may change everything inside it.
+- **One thread per mark.** Send the marks and Hermes works on them in the background (one subagent
+  per Send; the chat shows one line and the pane shows progress).
   Its replies, questions and your answers stay attached to the mark they are about.
 - **Edits stay inside the marks.** Every result is blended through the mark's mask and compared
   with the previous version. An edit that changes even one pixel outside its mark is refused and
@@ -22,7 +24,8 @@ review, and four agent tools Hermes uses to do the work.
     mark's edge so no outline shows; privacy operations cover every pixel of the mark.
   - `generate`: repaints the marked area with your configured image model, for removing or
     replacing things.
-  - `from_file`: takes a full-size copy the agent edited another way and keeps only the marked area.
+  - `from_file`: takes a full-size copy the agent edited another way (saved in the project's work
+    folder) and keeps only the marked area.
 - **Honest review.** Hermes has to say what is still visibly wrong after each edit, and the pane
   shows it as "Still visible: …". When a removed object continues past the edge of its mark, the
   edge check says so whatever Hermes reports, and suggests drawing a bigger mark.
@@ -31,8 +34,9 @@ review, and four agent tools Hermes uses to do the work.
   header (⌘Z, ⇧⌘Z) step the picture back and forward. The strip above the image lists the original
   and every edit: click one, or press **[** and **]**, to look at it without changing anything;
   **H** hides the mark outlines; the strip collapses to a small pill when it is in the way.
-- **Save.** PNG, JPEG or WebP, written as a new file. Your original is never modified. GPS data is
-  stripped and the color profile is kept.
+- **Save.** PNG, JPEG or WebP, written as a new file. Your original is never modified. GPS data
+  and embedded file names, descriptions and comments are stripped; the color profile is kept.
+  While you are looking at an earlier version, Save writes that version.
 
 ## Requirements
 
@@ -86,10 +90,10 @@ Open marks can be moved with Select; once sent, an edit belongs to that outline.
 
 | Tool | What it does |
 | --- | --- |
-| `retouch_get` | Reads a project: its marks, notes, threads and versions. |
+| `retouch_get` | Reads a project: its marks, notes and threads, with an overview of the image and a close-up of each mark. |
 | `retouch_edit` | Edits one mark with `adjust`, `generate` or `from_file`, and returns the pixel proof, the edge check and a before/after review image. |
 | `retouch_reply` | Posts Hermes's reply on a mark, with its status and what is still visibly wrong. |
-| `retouch_export` | Writes the current version to the project's exports folder. |
+| `retouch_export` | Writes a version (the current one by default) to the project's exports folder, and nowhere else. |
 
 Only you close a mark. Hermes can mark it as working, ready for review, or a question for you.
 
@@ -97,18 +101,27 @@ Only you close a mark. Hermes can mark it as working, ready for review, or a que
 
 - Projects, versions, crops, review images and exports live in
   `<HERMES_HOME>/plugin-data/retouch/`, separately for each Hermes profile.
-- `generate` sends a crop of the area around the mark (not the whole image) to Hermes's
+- **Your chat model sees the picture.** Every `retouch_get` sends a downscaled overview of the
+  whole image plus a close-up of each mark to your chat model's provider, and every `retouch_edit`
+  sends a before/after strip. Each Send starts one background subagent to do the work; if you
+  configured delegation to use a different model or provider, the pictures go there too.
+- `generate` additionally sends a crop of the area around the mark to Hermes's
   `image_generate` tool, which forwards it to the image provider you configured. Retouch then
-  downloads the result from the URL the provider returns. Your provider's own data retention
-  applies; some providers return results at public URLs, so don't use `generate` on images you
-  can't share with your provider.
-- `from_file` reads an image at an absolute path the agent passes to it.
+  downloads the result: only over https, only from a public address, at most 40 MB. Your provider's
+  own data retention applies; some providers return results at public URLs, so don't use `generate`
+  on images you can't share with your provider.
+- Text inside a picture is treated as picture content. Hermes is told never to follow it, and the
+  tools cannot read or write outside the project: `from_file` reads only the project's `work`
+  folder and exports go only to its `exports` folder.
 - **Screenshot** (macOS, local gateway only) runs the system `screencapture -i` picker on the
   machine the gateway runs on and reads the one file it writes to a temporary folder, for at most
   55 seconds. This is Retouch's only subprocess; nothing is captured without you choosing the
-  region, and the pane hides the button when your gateway is remote. Untouched screenshot projects
+  region, and the pane hides the button when your gateway is remote. macOS asks once for Screen
+  Recording permission, and because Hermes starts its gateway through `osascript`, the permission
+  it asks for covers `osascript` as a whole. If you would rather not grant that, press ⌘⇧⌃4 and
+  paste with ⌘V instead: it needs no permission. Untouched screenshot projects
   are the only thing Retouch ever deletes on its own (see Using it); Discard refuses a kept project.
-- Retouch makes no other network calls, runs no other shell commands or background processes,
+- Retouch makes no other network calls and runs no other shell commands,
   stores no credentials and sends no telemetry.
 
 ## Development
