@@ -59,6 +59,9 @@ with the note.
    sentences: what you changed. `remaining_issues` is shown to the user as a warning: name exactly
    what is still visibly wrong, `""` only if nothing is. Never call an edit clean, in the thread or
    in chat, when you saw a flaw. If you could not do it, `status="question"` and say what you need.
+   A question means no edit and nothing for the user to look at, so keep it for when you cannot
+   act at all. When the note leaves a detail open (the exact wording, the exact colour), choose the
+   most likely reading, make the edit, and say in the reply what you assumed so they can correct it.
 5. Never say a mark is resolved or accepted. The user accepts, sends it back, or reverts in the pane.
 6. Export only when the user asked: `retouch_export` writes into the project's exports folder; put
    the returned `MEDIA:` line in your reply.

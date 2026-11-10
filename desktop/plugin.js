@@ -30,7 +30,7 @@ import {
   Tip,
   useQuery
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const QK = ['retouch']
@@ -340,13 +340,19 @@ async function submitToOwnSession(project, prompt, pins) {
   if (typeof host.request !== 'function') return false
   // Second pass: the remembered session is gone (gateway restart), so make a new one.
   for (let pass = 0; pass < 2; pass++) {
+    const choice = chosenModel()
+    const key = `${project.id}|${choice ? `${choice.provider}/${choice.model}` : ''}`
     try {
-      let session = ownSessions.get(project.id)
+      let session = ownSessions.get(key)
       if (!session) {
-        const made = await host.request('session.create', { title: `Retouch · ${project.title} · ${stamp()}`, hidden: true })
+        const made = await host.request('session.create', {
+          title: `Retouch · ${project.title} · ${stamp()}`,
+          hidden: true,
+          ...(choice ? { model: choice.model, provider: choice.provider } : {})
+        })
         session = made?.session_id
         if (!session) return false
-        ownSessions.set(project.id, session)
+        ownSessions.set(key, session)
       }
       await host.request('prompt.submit', { session_id: session, text: prompt })
       const flight = inFlight.get(session) || { projectId: project.id, pins: new Set(), turns: 0 }
@@ -355,10 +361,145 @@ async function submitToOwnSession(project, prompt, pins) {
       inFlight.set(session, flight)
       return true
     } catch {
-      ownSessions.delete(project.id)
+      ownSessions.delete(key)
     }
   }
   return false
+}
+
+// Which model does the work: null means the profile's default. Kept per profile by the app.
+const chosenModel = () => {
+  const saved = api.storage.get('model', null)
+  return saved?.model && saved?.provider ? saved : null
+}
+
+const MODELS_SHOWN = 12
+
+// Pick the model Retouch's own session runs on. The list is the app's own inventory of the
+// providers this profile is signed in to; the work needs a model that can see pictures.
+function ModelPicker() {
+  const [choice, setChoice] = useState(chosenModel)
+  const { data } = useQuery({
+    queryKey: [...QK, 'models'],
+    queryFn: () => host.request('model.options', {}),
+    enabled: typeof host.request === 'function',
+    staleTime: 5 * 60 * 1000
+  })
+  const providers = (data?.providers || []).filter(p => p.authenticated !== false && p.models?.length)
+  if (!providers.length) return null
+  const choose = next => {
+    if (next) api.storage.set('model', next)
+    else api.storage.remove('model')
+    setChoice(next)
+  }
+  const shown = choice?.model || data?.model || 'Default'
+  return jsxs(DropdownMenu, {
+    children: [
+      jsx(Tip, {
+        label: 'The model that does the work (it has to be able to see pictures)',
+        children: jsx(DropdownMenuTrigger, {
+          asChild: true,
+          children: jsxs(Button, {
+            size: 'sm',
+            variant: 'ghost',
+            'aria-label': 'Choose the model',
+            style: { maxWidth: 150, gap: 4, fontSize: 12, color: 'var(--ui-text-secondary)' },
+            children: [
+              jsx('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: shown.split('/').pop() }),
+              icon(icons.ChevronDown, 12)
+            ]
+          })
+        })
+      }),
+      jsxs(DropdownMenuContent, {
+        align: 'end',
+        side: 'top',
+        style: { maxHeight: 360, overflowY: 'auto' },
+        children: [
+          jsxs(DropdownMenuItem, {
+            onSelect: () => choose(null),
+            children: [
+              jsx('span', { style: { flex: 1 }, children: 'Default' }),
+              jsx('span', { style: { fontSize: 11, color: 'var(--ui-text-quaternary)' }, children: data?.model || '' })
+            ]
+          }, 'default'),
+          ...providers.flatMap(p => [
+            jsx('div', { style: { padding: '6px 8px 2px', fontSize: 11, color: 'var(--ui-text-quaternary)' }, children: p.name }, `h:${p.slug}`),
+            ...p.models.slice(0, MODELS_SHOWN).map(m =>
+              jsxs(DropdownMenuItem, {
+                onSelect: () => choose({ provider: p.slug, model: m }),
+                children: [
+                  jsx('span', { style: { flex: 1 }, children: m }),
+                  choice?.provider === p.slug && choice?.model === m && icon(icons.Check, 12)
+                ]
+              }, `${p.slug}/${m}`)
+            )
+          ])
+        ]
+      })
+    ]
+  })
+}
+
+// What Hermes is doing right now in a project's own session, for the banner over the picture.
+const STEPS = {
+  retouch_get: 'looking at the picture',
+  retouch_edit: 'editing',
+  retouch_reply: 'writing back to you',
+  retouch_export: 'saving a copy',
+  image_generate: 'generating new pixels',
+  skill_view: 'reading how Retouch works'
+}
+const activity = new Map() // project id -> step text
+const watchers = new Set()
+function setActivity(projectId, step) {
+  if (step) activity.set(projectId, step)
+  else activity.delete(projectId)
+  watchers.forEach(w => w())
+}
+const watchActivity = w => (watchers.add(w), () => watchers.delete(w))
+
+function ownToolStarted(event) {
+  const flight = inFlight.get(event?.session_id)
+  if (flight) setActivity(flight.projectId, STEPS[event.payload?.name] || 'thinking')
+}
+
+// Over the picture, where it cannot be missed: which marks Hermes has and what it is doing.
+function WorkingBanner({ project }) {
+  const step = useSyncExternalStore(watchActivity, () => activity.get(project.id) || '')
+  const busy = project.pins.filter(p => statusOf(p.status).busy)
+  if (!busy.length) return null
+  const marks = busy.map(p => `#${p.number}`).join(', ')
+  const started = busy.some(p => p.status === 'working') || step
+  return jsxs('div', {
+    role: 'status',
+    style: {
+      position: 'absolute',
+      top: 12,
+      left: '50%',
+      transform: 'translateX(-50%)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      padding: '7px 14px',
+      borderRadius: 99,
+      fontSize: 13,
+      fontWeight: 500,
+      whiteSpace: 'nowrap',
+      color: 'var(--ui-text-primary)',
+      background: 'color-mix(in srgb, var(--ui-bg-elevated) 94%, transparent)',
+      border: '1px solid var(--ui-accent)',
+      boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+      backdropFilter: 'blur(12px)',
+      pointerEvents: 'none',
+      zIndex: 3
+    },
+    children: [
+      jsx(GlyphSpinner, { ariaLabel: 'Working' }),
+      started ? `Hermes is working on ${marks}` : `Sent ${marks} to Hermes, starting`,
+      step && jsx('span', { style: { fontWeight: 400, color: 'var(--ui-text-tertiary)' }, children: `· ${step}` })
+    ]
+  })
 }
 
 // A turn in one of Retouch's own sessions ended. Its chat is hidden, so a mark the agent left
@@ -370,6 +511,7 @@ async function ownTurnEnded(event) {
   flight.turns = failed ? 0 : flight.turns - 1
   if (flight.turns > 0) return
   inFlight.delete(event.session_id)
+  setActivity(flight.projectId, null)
   try {
     const project = await rest(`/projects/${flight.projectId}`)
     const left = project.pins.filter(p => flight.pins.has(p.number) && statusOf(p.status).busy)
@@ -1161,9 +1303,10 @@ function Toolbar({ project, tool, setTool, shapeKind, setShapeKind, onClose }) {
       jsx(ShapePicker, { tool, setTool, shapeKind, setShapeKind }),
       jsx(IconButton, { label: 'Note at a spot (T)', active: tool === 'text', onClick: () => setTool('text'), children: jsx(TextGlyph, {}) }),
       jsx('span', { style: { width: 1, height: 20, margin: '0 4px', background: 'var(--ui-stroke-secondary)' } }),
+      open > 0 && jsx(ModelPicker, {}),
       open > 0 &&
         jsx(Tip, {
-          label: 'Ask Hermes in the chat to work on the open marks',
+          label: 'Ask Hermes to work on the open marks',
           children: jsxs(Button, {
             size: 'sm',
             onClick: () => sendToAgent(project),
@@ -1312,6 +1455,25 @@ function Workbench({ projectId, onOpened, onClose }) {
   useEffect(() => {
     if (selected && project && !project.pins.some(p => p.number === selected)) setSelected(null)
   }, [project, selected])
+  // A mark Hermes was working on came back. Say which and why (an edit to review, or a question
+  // and therefore no edit), and open its thread unless the user is in the middle of something.
+  const was = useRef({ id: null, status: new Map() })
+  useEffect(() => {
+    if (!project) return
+    const before = was.current.id === project.id ? was.current.status : new Map()
+    const back = project.pins.filter(p => statusOf(before.get(p.number)).busy && (p.status === 'needs_review' || p.status === 'question'))
+    was.current = { id: project.id, status: new Map(project.pins.map(p => [p.number, p.status])) }
+    if (!back.length) return
+    for (const p of back) {
+      host.notify({
+        kind: 'info',
+        message: p.status === 'question'
+          ? `Retouch: Hermes has a question on mark #${p.number} and has not changed the picture yet.`
+          : `Retouch: mark #${p.number} is ready to review.`
+      })
+    }
+    if (!selected && !draft) setSelected(back[0].number)
+  }, [project])
   useEffect(() => {
     // a viewed version that left the path (a new edit branched off), or became current, falls back
     if (viewing && project && !versionPath(project).path.some(v => v.id === viewing && v.id !== project.current_version)) setViewing(null)
@@ -1450,6 +1612,7 @@ function Workbench({ projectId, onOpened, onClose }) {
               },
               children: 'Draw on the image where something needs work'
             }),
+          jsx(WorkingBanner, { project }),
           jsx(VersionStrip, { project, viewing, setViewing, clean, setClean, collapsed, setCollapsed }),
           jsx(Toolbar, { project, tool, setTool: chooseTool, shapeKind, setShapeKind, onClose })
         ]
@@ -1521,6 +1684,7 @@ export default {
     ctx.onDispose(() => closeTile?.())
     ctx.onEvent('message.complete', ownTurnEnded)
     ctx.onEvent('error', ownTurnEnded)
+    ctx.onEvent('tool.start', ownToolStarted)
     ctx.registerMany([
       {
         id: 'toggle',
