@@ -1492,9 +1492,23 @@ export default {
         data: { id: 'retouch.toggle', label: 'Open or close Retouch', category: 'view', defaults: ['mod+shift+e'], run: toggleRetouch }
       },
       {
+        // The title-bar slot draws what `render` returns (a `data`-only entry shows nothing).
         id: 'titlebar',
         area: TITLEBAR_AREAS.right,
-        data: { id: 'retouch.titlebar', label: 'Retouch', icon: icon(icons.ImageIcon), actionId: 'retouch.toggle', onSelect: toggleRetouch }
+        render: () =>
+          jsx(Tip, {
+            label: 'Retouch (⌘⇧E)',
+            children: jsx(Button, {
+              type: 'button',
+              size: 'icon-titlebar',
+              variant: 'ghost',
+              'aria-label': 'Open or close Retouch',
+              className: 'text-muted-foreground/85 hover:bg-(--ui-control-hover-background) hover:text-foreground bg-transparent select-none',
+              onPointerDown: e => e.stopPropagation(),
+              onClick: toggleRetouch,
+              children: icon(icons.ImageIcon, 14)
+            })
+          })
       }
     ])
     // Enabling the plugin shows nothing by itself; say once where the window is.

@@ -1,5 +1,7 @@
 # Retouch
 
+![Retouch: mark what needs work, Hermes edits only inside the mark](assets/banner.png)
+
 Mark the parts of an image that need work, leave a note on each mark, and Hermes fixes only those
 areas. Every edit is checked pixel by pixel to change nothing outside its mark, saved as a new
 version, and reviewed by you in that mark's own thread.
