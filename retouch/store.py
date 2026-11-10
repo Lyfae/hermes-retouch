@@ -276,6 +276,26 @@ def revert(conn, project_id: str, *, to_version: str | None = None, pin: int | N
     return get_project(conn, project_id)
 
 
+def redo_target(conn, project_id: str) -> str | None:
+    """The version Redo would make current: the latest one built on the current version, or None."""
+    proj = require_project(conn, project_id)
+    row = conn.execute("SELECT id FROM versions WHERE project_id = ? AND parent = ? ORDER BY seq DESC LIMIT 1",
+                       (project_id, proj["current_version"])).fetchone()
+    return row["id"] if row else None
+
+
+def redo(conn, project_id: str) -> dict:
+    """Undo an Undo: step forward to the latest version built on the current one. Like the plain
+    Undo it mirrors, it moves the picture only; marks keep the status the user left them in."""
+    target = redo_target(conn, project_id)
+    if target is None:
+        raise StoreError("nothing to redo")
+    with conn:
+        conn.execute("UPDATE projects SET current_version = ? WHERE id = ?", (target, project_id))
+        _touch(conn, project_id)
+    return get_project(conn, project_id)
+
+
 def set_session(conn, project_id: str, session_id: str | None) -> None:
     with conn:
         conn.execute("UPDATE projects SET session_id = ? WHERE id = ?", (session_id, project_id))

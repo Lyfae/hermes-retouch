@@ -15,6 +15,8 @@ Promises checked after every step:
   P5  A mark's round increases only through 'more_work'.
   P7  A mark number is an identity: once handed out it is never assigned again, even after a delete
       (versions and the chat thread refer to marks by number).
+  P8  Redo undoes Undo: it steps to the newest edit built on the current version exactly when one
+      exists, changes no mark, and Undo followed at once by Redo is a round trip.
 
 Not checked here: `restore_status` after a failed edit (its guard matters only with concurrent
 writers, and these runs are sequential); the generate and from_file edit methods (adjust only).
@@ -150,6 +152,52 @@ class RetouchMachine(RuleBasedStateMachine):
             return
         if with_pin and before:
             self._note_transition(n, before["status"], "open", by_user=True)
+
+    def _marks_snapshot(self):
+        return [(p["number"], p["status"], repr(p["geom"]), p["round"], p["result_version"]) for p in self.project()["pins"]]
+
+    @rule()
+    def undo(self):
+        """The header's Undo: back one version, marks untouched. Common on purpose, so that edits made
+        after it build branches (two edits on one version), which is where Redo can go wrong."""
+        marks = self._marks_snapshot()
+        try:
+            self.ws.revert(self.pid)
+        except (service.RetouchError, store.StoreError):
+            return
+        assert self._marks_snapshot() == marks, "Undo changed a mark"
+
+    @rule()
+    def redo(self):
+        """P8: Redo steps to the NEWEST edit built on the current version, exactly when one exists,
+        and moves the picture only."""
+        before = self.project()
+        undone = [v for v in before["versions"] if v["parent"] == before["current_version"]]
+        marks = self._marks_snapshot()
+        try:
+            after = self.ws.redo(self.pid)
+        except (service.RetouchError, store.StoreError):
+            assert not undone, "Redo was refused although an undone edit exists (P8)"
+            return
+        assert undone, "Redo moved the picture although nothing had been undone (P8)"
+        newest = max(undone, key=lambda v: v["seq"])
+        assert after["current_version"] == newest["id"], "Redo did not go to the newest edit built on the current version (P8)"
+        assert self._marks_snapshot() == marks, "Redo changed a mark (P8)"
+
+    @rule()
+    def undo_then_redo(self):
+        """P8: Undo followed at once by Redo is a round trip, unless a newer edit was built on the
+        version Undo went back to (then Redo follows that one, the path the user took last)."""
+        before = self.project()
+        start = before["current_version"]
+        try:
+            mid = self.ws.revert(self.pid)
+        except (service.RetouchError, store.StoreError):
+            return  # already at the original
+        siblings = [v for v in mid["versions"] if v["parent"] == mid["current_version"]]
+        after = self.ws.redo(self.pid)
+        if max(siblings, key=lambda v: v["seq"])["id"] == start:
+            assert after["current_version"] == start, "Undo then Redo did not return to where it started (P8)"
 
     @rule(n=marks)
     def delete_mark(self, n):

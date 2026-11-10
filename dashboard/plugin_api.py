@@ -160,6 +160,11 @@ def revert(project_id: str, body: RevertIn) -> dict[str, Any]:
     return _call(_ws().revert, project_id, to_version=body.version, pin=body.pin)
 
 
+@router.post("/projects/{project_id}/redo")
+def redo(project_id: str) -> dict[str, Any]:
+    return _call(_ws().redo, project_id)
+
+
 @router.post("/projects/{project_id}/export")
 def export(project_id: str, body: ExportIn) -> dict[str, Any]:
     path = _call(_ws().export_and_keep, project_id, version_id=body.version, fmt=body.format, quality=body.quality,

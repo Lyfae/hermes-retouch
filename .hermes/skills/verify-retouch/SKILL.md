@@ -18,7 +18,7 @@ the ones nobody thinks to write:
 2. **The mark/version state machine is honest.** Only the user closes a mark; a sent mark keeps
    its outline; versions form a tree rooted at the original and are never deleted; every stored
    version is clean against the outline it was edited with; rounds grow only through "needs more
-   work"; a mark number is never reused.
+   work"; a mark number is never reused; Redo undoes Undo and moves only the picture.
 
 `verify/` checks both with [Hypothesis](https://hypothesis.readthedocs.io): generated inputs
 against the REAL compositing code, and generated sequences of user/agent calls against the REAL
@@ -31,8 +31,8 @@ store and service (SQLite in a temp dir). No model of the code exists separately
 | `retouch/composite.py` (`apply_in_region`, `blend_full`, `inward_soft_mask`, `outside_changed_px`) | `verify/test_region_property.py` | nothing else unless it fails |
 | `retouch/geometry.py` (`build_mask`, `brush_is_closed`, `validate`, `normalize`) | both files | a new shape needs a row in `geoms()` in test_region_property.py and in `add_mark` in test_state_machine.py |
 | `retouch/ops.py` (`OPS`, `SOFT_EDGE_OPS`, `PRIVACY_OPS`, `run_ops`) | `verify/test_region_property.py` | numeric ranges are read from `OPS`; an op with no numeric range (like `redact`) needs its own strategy, as `redact` has in `test_adjust_in_region_...` |
-| `retouch/store.py` (`USER_ACTIONS`, `AGENT_SETS`, `CLOSED`, `add_pin`, `add_version`, `revert`, `agent_set_status`, `user_action`, `update_pin`) | `verify/test_state_machine.py` | a new status or action: add it to the rules AND decide which promise it must keep (see "Updating the model") |
-| `retouch/service.py` (`edit`, `_apply_and_save`, `update_pin`, `send`, `revert`, `reply`) | `verify/test_state_machine.py` | same |
+| `retouch/store.py` (`USER_ACTIONS`, `AGENT_SETS`, `CLOSED`, `add_pin`, `add_version`, `revert`, `redo`, `redo_target`, `agent_set_status`, `user_action`, `update_pin`) | `verify/test_state_machine.py` | a new status or action: add it to the rules AND decide which promise it must keep (see "Updating the model") |
+| `retouch/service.py` (`edit`, `_apply_and_save`, `update_pin`, `send`, `revert`, `redo`, `reply`) | `verify/test_state_machine.py` | same |
 
 ## Run
 
@@ -104,6 +104,10 @@ and fails as stated:
 - P2: in `service.update_pin`, make the `status != "open"` check `False`.
 - P3: in `store.revert`, also `DELETE FROM versions WHERE seq > <reverted-to seq>`.
 - P7: in `store.add_pin`, replace `row["last_pin"]` with `0`.
+- P8 (which edit): in `store.redo_target`, order by `seq ASC` (the slowest break to find, about a
+  minute: it needs two edits built on one version).
+- P8 (only when undone): in `store.redo_target`, replace `AND parent = ?` with `AND id != ?`.
+- P8 (marks untouched): in `store.redo`, also `UPDATE pins SET round = round + 1`.
 - revert: remove `status = 'open'` from `store.revert`'s pin update (caught by P2).
 
 ## Scope and bounds
@@ -126,7 +130,7 @@ conflict is reached only by the retry loop); screenshot, keep, discard and sweep
 | Check | Covers |
 |---|---|
 | `verify/test_region_property.py` | `composite.apply_in_region`, `composite.blend_full`, `composite.inward_soft_mask`, `composite.outside_changed_px`, `geometry.build_mask`, `ops.run_ops` |
-| `verify/test_state_machine.py` | `store.USER_ACTIONS/AGENT_SETS/CLOSED`, `store.add_pin`, `store.add_version`, `store.revert`, `store.agent_set_status`, `store.user_action`, `store.update_pin`, `service.edit`, `service._apply_and_save`, `service.update_pin`, `service.send`, `service.revert`, `service.reply` |
+| `verify/test_state_machine.py` | `store.USER_ACTIONS/AGENT_SETS/CLOSED`, `store.add_pin`, `store.add_version`, `store.revert`, `store.redo`, `store.redo_target`, `store.agent_set_status`, `store.user_action`, `store.update_pin`, `service.edit`, `service._apply_and_save`, `service.update_pin`, `service.send`, `service.revert`, `service.redo`, `service.reply` |
 
 The sync point is the last commit that touched `verify/`:
 

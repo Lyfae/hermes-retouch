@@ -432,6 +432,12 @@ class Workspace:
         notify(project_id)
         return proj
 
+    def redo(self, project_id: str) -> dict:
+        with self.db() as conn:
+            proj = store.redo(conn, project_id)
+        notify(project_id)
+        return proj
+
     # -- what the agent and the pane look at -------------------------------------------------------
     def views(self, project_id: str, numbers: list[int] | None = None, max_crops: int = 6) -> tuple[dict, Image.Image, list]:
         proj = self.project(project_id)

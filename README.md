@@ -26,9 +26,11 @@ review, and four agent tools Hermes uses to do the work.
 - **Honest review.** Hermes has to say what is still visibly wrong after each edit, and the pane
   shows it as "Still visible: …". When a removed object continues past the edge of its mark, the
   edge check says so whatever Hermes reports, and suggests drawing a bigger mark.
-- **Versions.** Each edit is a new version. In a mark's bubble you can Accept it, ask for more
-  work, Revert it, or close it as won't fix. Undo the last edit from the header, and hold the eye
-  button to compare with the original.
+- **Versions.** Each edit is a new version and none is ever deleted. In a mark's bubble you can
+  Accept it, ask for more work, Revert it, or close it as won't fix. **Undo** and **Redo** in the
+  header (⌘Z, ⇧⌘Z) step the picture back and forward. The strip above the image lists the original
+  and every edit: click one, or press **[** and **]**, to look at it without changing anything;
+  **H** hides the mark outlines; the strip collapses to a small pill when it is in the way.
 - **Save.** PNG, JPEG or WebP, written as a new file. Your original is never modified. GPS data is
   stripped and the color profile is kept.
 
@@ -74,7 +76,8 @@ routes are loaded once per gateway process.
    Note **T**. Draw on the image, choose an intent, write what you want, and press ⌘↩.
 3. Click **Send**. The pane asks Hermes in the open chat to work on your marks.
 4. Click a mark's number to see Hermes's reply, the result and any warnings. Accept it, or say what
-   is still wrong and send it back.
+   is still wrong and send it back. Step through the versions with **[** and **]**, hide the
+   outlines with **H**, and press Esc to return to the current picture.
 5. **Save ▾** writes the finished image.
 
 Open marks can be moved with Select; once sent, an edit belongs to that outline.
