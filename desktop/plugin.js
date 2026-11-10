@@ -289,6 +289,15 @@ async function upload(file, onOpened, { scratch = false } = {}) {
   if (project?.id) onOpened(project.id)
 }
 
+// An image pasted on the pane is Retouch's. Claiming the event (preventDefault) is what the app's
+// own window-level paste handler checks before it attaches the clipboard to the chat composer.
+function pasteImage(event, onOpened) {
+  const file = imageFrom(event.clipboardData)
+  if (!file) return
+  event.preventDefault()
+  upload(file, onOpened, { scratch: true })
+}
+
 function stamp() {
   const d = new Date()
   const two = n => String(n).padStart(2, '0')
@@ -413,7 +422,7 @@ function Start({ onOpened }) {
       setOver(false)
       upload(imageFrom(e.dataTransfer), onOpened)
     },
-    onPaste: e => upload(imageFrom(e.clipboardData), onOpened, { scratch: true }),
+    onPaste: e => pasteImage(e, onOpened),
     children: [
       jsx(FilePicker, { inputRef: input, onOpened }),
       jsxs('div', {
@@ -1340,7 +1349,7 @@ function Workbench({ projectId, onOpened, onClose }) {
       upload(imageFrom(e.dataTransfer), onOpened)
     },
     onPaste: e => {
-      if (!e.target.closest?.(TYPING)) upload(imageFrom(e.clipboardData), onOpened, { scratch: true })
+      if (!e.target.closest?.(TYPING)) pasteImage(e, onOpened)
     },
     style: { position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', outline: 'none', overflow: 'hidden' },
     children: [
