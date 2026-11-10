@@ -481,9 +481,13 @@ function Start({ onOpened }) {
 
 // --- bubbles -----------------------------------------------------------------------------------
 
-function DraftBubble({ project, draft, onAdded, onCancel }) {
-  const [intent, setIntent] = useState(draft.intent || 'fix')
-  const [note, setNote] = useState('')
+function DraftBubble({ project, draft, setDraft, onAdded, onCancel }) {
+  // The note and intent live on the draft, not here: this bubble unmounts while the user looks at
+  // another version or hides the marks, and what they chose must still be there when it comes back.
+  const intent = draft.intent || 'fix'
+  const setIntent = value => setDraft(d => d && { ...d, intent: value })
+  const note = draft.note || ''
+  const setNote = text => setDraft(d => d && { ...d, note: text })
   const [busy, setBusy] = useState(false)
   const add = async () => {
     if (!note.trim() || busy) return
@@ -716,6 +720,7 @@ function BubbleAnchor({ project, draft, selected, setDraft, onSelect, paneRef })
             ? jsx(DraftBubble, {
                 project,
                 draft,
+                setDraft,
                 onCancel: close,
                 onAdded: n => {
                   setDraft(null)
@@ -732,7 +737,7 @@ function BubbleAnchor({ project, draft, selected, setDraft, onSelect, paneRef })
 
 // --- the stage: image, marks, drawing ----------------------------------------------------------
 
-function Stage({ project, image, comparing, tool, shapeKind, draft, setDraft, selected, onSelect }) {
+function Stage({ project, image, hidden, readOnly, tool, shapeKind, draft, setDraft, selected, onSelect }) {
   const svg = useRef(null)
   const gesture = useRef(null)
   const [drag, setDrag] = useState(null)
@@ -750,7 +755,7 @@ function Stage({ project, image, comparing, tool, shapeKind, draft, setDraft, se
   const perScreenPx = () => W / svg.current.getBoundingClientRect().width
 
   const down = e => {
-    if (e.button !== 0 || comparing) return
+    if (e.button !== 0 || readOnly) return
     const p = toImage(e)
     const hitPin = Number(e.target.getAttribute?.('data-pin')) || null
     if (tool === 'select') {
@@ -849,8 +854,8 @@ function Stage({ project, image, comparing, tool, shapeKind, draft, setDraft, se
           width: '100%',
           height: '100%',
           touchAction: 'none',
-          cursor: comparing || tool === 'select' ? 'default' : 'crosshair',
-          opacity: comparing ? 0 : 1
+          cursor: readOnly || tool === 'select' ? 'default' : 'crosshair',
+          opacity: hidden ? 0 : 1
         },
         onPointerDown: down,
         onPointerMove: move,
@@ -882,7 +887,7 @@ function Stage({ project, image, comparing, tool, shapeKind, draft, setDraft, se
       }),
       // Number badges live in HTML so their text stays crisp at any image size.
       jsx('div', {
-        style: { position: 'absolute', inset: 0, pointerEvents: 'none', opacity: comparing ? 0 : 1 },
+        style: { position: 'absolute', inset: 0, pointerEvents: 'none', opacity: hidden ? 0 : 1 },
         children: shown.map(({ pin, at }) => {
           const st = statusOf(pin.status)
           const quiet = st.closed && selected !== pin.number
@@ -911,7 +916,7 @@ function Stage({ project, image, comparing, tool, shapeKind, draft, setDraft, se
                 fontWeight: 700,
                 lineHeight: '18px',
                 cursor: 'pointer',
-                pointerEvents: comparing ? 'none' : 'auto',
+                pointerEvents: readOnly ? 'none' : 'auto',
                 boxShadow: selected === pin.number ? `0 0 0 3px color-mix(in srgb, ${st.color} 35%, transparent)` : 'none'
               },
               children: pin.status === 'resolved' ? '✓' : String(pin.number)
@@ -1272,7 +1277,14 @@ function Workbench({ projectId, onOpened, onClose }) {
     // a viewed version that left the path (a new edit branched off), or became current, falls back
     if (viewing && project && !versionPath(project).path.some(v => v.id === viewing && v.id !== project.current_version)) setViewing(null)
   }, [project, viewing])
+  // A remembered project that is gone (discarded, or left over from another gateway) is not an
+  // error to show: go back to the start screen, where the user picks what to open.
+  const gone = !project && /(?:^|error:\s*)404:/i.test(String(error?.message ?? error ?? ''))
+  useEffect(() => {
+    if (gone) onClose(projectId)
+  }, [gone])
 
+  if (gone) return null
   if (!project && error) return jsx(LoadError, { error, retry: refetch, onClose })
   if (!project) return jsx('div', { style: { padding: 16, fontSize: 13, color: 'var(--ui-text-tertiary)' }, children: 'Loading…' })
 
@@ -1369,7 +1381,9 @@ function Workbench({ projectId, onOpened, onClose }) {
             children: jsxs('div', {
               style: { position: 'relative' },
               children: [
-                jsx(Stage, { project, image, comparing: viewOnly, tool, shapeKind, draft, setDraft, selected, onSelect: select }),
+                // Looking at another version keeps the marks on unless H hid them; either way nothing
+                // can be drawn, moved or opened until the user is back on the current picture.
+                jsx(Stage, { project, image, hidden: comparing || clean, readOnly: viewOnly, tool, shapeKind, draft, setDraft, selected, onSelect: select }),
                 !viewOnly &&
                   jsx('div', {
                     style: { position: 'absolute', inset: 0, pointerEvents: 'none' },
@@ -1406,10 +1420,12 @@ function Workbench({ projectId, onOpened, onClose }) {
 }
 
 function RetouchPane() {
-  const [projectId, setProjectId] = useState(() => api.storage.get('project') || null)
+  // Each profile has its own Retouch data, so each remembers its own open project.
+  const [key] = useState(() => `project:${host.state.profile?.get?.() || 'default'}`)
+  const [projectId, setProjectId] = useState(() => api.storage.get(key) || null)
   const choose = next => {
-    if (next) api.storage.set('project', next)
-    else api.storage.remove('project')
+    if (next) api.storage.set(key, next)
+    else api.storage.remove(key)
     setProjectId(next)
   }
   return projectId

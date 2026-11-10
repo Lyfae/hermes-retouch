@@ -59,6 +59,10 @@ class StoreError(ValueError):
     pass
 
 
+class NoSuchProject(StoreError):
+    """The project id names nothing here: discarded, or it belongs to another profile's data."""
+
+
 class VersionConflict(StoreError):
     """Another edit became current while this one was being made; redo it on the new current version."""
 
@@ -104,7 +108,7 @@ def create_project(conn, *, title: str, src_name: str, size: tuple[int, int], fi
 def require_project(conn, project_id: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (str(project_id),)).fetchone()
     if row is None:
-        raise StoreError(f"no Retouch project {project_id!r}")
+        raise NoSuchProject(f"no Retouch project {project_id!r}")
     return row
 
 
@@ -142,7 +146,7 @@ def add_pin(conn, project_id: str, *, shape: str, geom: dict, intent: str = "fix
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT last_pin FROM projects WHERE id = ?", (project_id,)).fetchone()
         if row is None:
-            raise StoreError(f"no Retouch project {project_id!r}")
+            raise NoSuchProject(f"no Retouch project {project_id!r}")
         if conn.execute("SELECT COUNT(*) FROM pins WHERE project_id = ?", (project_id,)).fetchone()[0] >= MAX_PINS:
             raise StoreError(f"a project holds at most {MAX_PINS} marks; delete some first")
         n = max(row["last_pin"], conn.execute("SELECT COALESCE(MAX(number), 0) FROM pins WHERE project_id = ?",

@@ -41,6 +41,8 @@ router = APIRouter()
 def _call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
+    except _store.NoSuchProject as exc:  # the pane goes back to its start screen on this
+        raise HTTPException(status_code=404, detail=str(exc)) from None
     except _USER_ERRORS as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 

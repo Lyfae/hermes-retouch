@@ -83,6 +83,32 @@ def test_a_redirect_to_a_private_address_is_refused(monkeypatch):
         handler.redirect_request(None, None, 302, "Found", {}, "https://inside.test/secret.png")
 
 
+def test_the_download_connects_to_the_address_that_was_checked(monkeypatch):
+    """A host that answers the check with a public address and a later lookup with a private one
+    gains nothing: there is one lookup, and the connection goes to what it returned."""
+    answers = iter([[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+                    [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]])
+    monkeypatch.setattr(service.socket, "getaddrinfo", lambda *a, **k: next(answers))
+    dialled = []
+
+    def refuse(address, *a, **k):
+        dialled.append(address)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(service.socket, "create_connection", refuse)
+    with pytest.raises(OSError, match="stop here"):
+        service._PublicHTTPSConnection("rebind.test").connect()
+    assert dialled == [("93.184.216.34", 443)]
+
+
+def test_the_download_refuses_to_connect_to_a_private_address(monkeypatch):
+    monkeypatch.setattr(service.socket, "getaddrinfo",
+                        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443))])
+    monkeypatch.setattr(service.socket, "create_connection", lambda *a, **k: pytest.fail("connected"))
+    with pytest.raises(service.RetouchError, match="private address"):
+        service._PublicHTTPSConnection("inside.test").connect()
+
+
 def test_a_provider_file_outside_the_allowed_folder_is_refused(tmp_path):
     cache = tmp_path / "cache"
     cache.mkdir()

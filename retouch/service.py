@@ -8,11 +8,13 @@ Hermes is imported lazily and only in ``Workspace.current()`` and ``notify()``, 
 from __future__ import annotations
 
 import base64
+import http.client
 import ipaddress
 import re
 import shutil
 import socket
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -75,19 +77,43 @@ def notify(project_id: str) -> None:
     broadcast_plugin_event(PLUGIN_ID, "project.updated", {"project_id": project_id})
 
 
+def _public_addresses(host: str, port: int) -> list[str]:
+    """Every address ``host`` resolves to, or an error when any of them is not a public one."""
+    try:
+        found = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        raise RetouchError("the generated image's host could not be found") from None
+    addresses = [str(info[4][0]) for info in found]
+    if not addresses or not all(ipaddress.ip_address(a.split("%")[0]).is_global for a in addresses):
+        raise RetouchError("the image tool returned a link to a private address; Retouch will not fetch it")
+    return addresses
+
+
 def _require_public_https(url: str) -> None:
     """Refuse a link that is not https or whose host resolves to anything but a public address: the
     image provider's answer is untrusted, and the gateway can reach localhost and the home network."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "https" or not parts.hostname:
         raise RetouchError("the image tool returned a link Retouch will not fetch (https only)")
-    try:
-        found = socket.getaddrinfo(parts.hostname, parts.port or 443, type=socket.SOCK_STREAM)
-    except OSError:
-        raise RetouchError("the generated image's host could not be found") from None
-    for info in found:
-        if not ipaddress.ip_address(str(info[4][0]).split("%")[0]).is_global:
-            raise RetouchError("the image tool returned a link to a private address; Retouch will not fetch it")
+    _public_addresses(parts.hostname, parts.port or 443)
+
+
+class _PublicHTTPSConnection(http.client.HTTPSConnection):
+    """Connects to the very address that was checked, so a host cannot answer the check with a
+    public address and the connection with a private one. Through a proxy the proxy resolves the
+    name, and the check before the request is all there is."""
+
+    def connect(self):
+        if self._tunnel_host:
+            return super().connect()
+        address = _public_addresses(self.host, self.port)[0]
+        sock = socket.create_connection((address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PublicHTTPS(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_PublicHTTPSConnection, req, context=ssl.create_default_context())
 
 
 class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
@@ -135,7 +161,7 @@ def load_image_ref(ref: str, local_roots=()) -> Image.Image:
             raise RetouchError("the image tool returned no usable image") from None
     elif "://" in ref:
         _require_public_https(ref)
-        opener = urllib.request.build_opener(_CheckedRedirects)
+        opener = urllib.request.build_opener(_CheckedRedirects, _PublicHTTPS)
         try:
             with opener.open(urllib.request.Request(ref, headers={"User-Agent": "hermes-retouch"}), timeout=60) as resp:
                 data = resp.read(MAX_FETCH_BYTES + 1)
