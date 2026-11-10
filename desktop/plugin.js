@@ -1199,6 +1199,7 @@ function IconButton({ label, active = false, children, ...props }) {
 function Header({ project, comparing, setComparing, note, viewing, edits, undo, redo, onOpen, onOpened, onDiscarded }) {
   const working = project.pins.some(p => statusOf(p.status).busy)
   const release = () => setComparing(false)
+  const [discarding, setDiscarding] = useState(false)
   return jsxs('div', {
     style: {
       height: 40,
@@ -1233,17 +1234,23 @@ function Header({ project, comparing, setComparing, note, viewing, edits, undo, 
             jsxs(Button, {
               size: 'sm',
               variant: 'ghost',
+              disabled: discarding,
               onClick: () => act(() => rest(`/projects/${project.id}/keep`, { method: 'POST', body: {} })),
               children: [icon(icons.Check), 'Keep']
             }),
+            // Deleting takes a moment. The button says so and takes no second press, which would
+            // only be told the project is already gone.
             jsxs(Button, {
               size: 'sm',
               variant: 'ghost',
+              disabled: discarding,
               onClick: async () => {
+                setDiscarding(true)
                 const ok = await act(() => rest(`/projects/${project.id}`, { method: 'DELETE' }))
                 if (ok) onDiscarded(project.id)
+                else setDiscarding(false)
               },
-              children: [icon(icons.Trash2), 'Discard']
+              children: discarding ? [jsx(GlyphSpinner, { ariaLabel: 'Discarding' }), 'Discarding…'] : [icon(icons.Trash2), 'Discard']
             })
           ]
         }),
