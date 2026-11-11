@@ -57,7 +57,11 @@ uv run --no-project --python 3.14 --with "pillow==13.0.0" --with pytest --with h
 node verify/pane_scheduler.mjs      # the pane's Send queue; needs only Node, about a second
 ```
 
-The first command takes about 15 s with a warm uv cache (up to a minute the first time). Python
+The first command takes about 15 s with a warm uv cache (up to a minute the first time). If the
+shell has `PYTHONPATH` set (a terminal opened by Hermes does: it points at Hermes's own Python 3.14
+packages), prefix the `uv run` commands with `env -u PYTHONPATH`; otherwise a Python 3.11 run dies
+importing Pillow built for 3.14 ("cannot import name '_imaging'"), which is the shell, not the
+plugin. Python
 3.14 and Pillow 13 are what the Hermes gateway runs the plugin with; `tests/` also runs on 3.11 /
 Pillow 12.3, the plugin's declared floor. Add `--hypothesis-show-statistics` to see how much of the
 input space a run reached (the region check reports the share of marks touching the image edge and
