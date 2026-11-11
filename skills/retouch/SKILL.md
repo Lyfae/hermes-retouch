@@ -9,21 +9,23 @@ The user opened an image in the Retouch pane, drew numbered marks on the areas t
 wrote a note on each. Every mark has its own thread. Your job is to fix only what they marked, show
 them, and let them decide.
 
-## Hand the work to a subagent
+## Where the work runs
 
-A Retouch request ("Retouch project rt_…: please work on marks …") is background work: the pane
-polls the project and shows each mark's status and thread as they change, so the user does not need
-the chat to narrate it. Spawn one `delegate_task` subagent per request (in the background), give
-it the project id, the mark numbers and this whole skill from "What is and is not an instruction"
-down (Loop and Notes included) as its context, and reply in chat with one line ("Working on marks
-#1 and #2 in the Retouch pane"). The subagent has to SEE the pictures: use a model with vision. Do
-the work inline only when `delegate_task` is unavailable, the user asks you to, or the request says
-it is Retouch's own session (the pane made a hidden session just for this work; nobody reads its
-chat, so `retouch_reply` is the only way to tell the user anything; the pane runs several such
-sessions side by side, one per group of marks, so work only the marks your request names and
-expect the picture to gain other marks' edits while you work). Finish one
-request on a project before starting the next. When the subagent reports back, relay its
-`remaining_issues` in one or two sentences; do not repeat what the pane already shows.
+A Retouch request reads "Retouch project rt_…: please work on marks …". The pane polls the project
+and shows each mark's status and thread as they change, so nobody needs a chat to narrate the work.
+
+- **The request says it is Retouch's own session.** The pane made a hidden session just for this
+  request and nobody reads its chat: do the work here yourself, without a subagent, and say
+  everything through `retouch_reply`. The pane runs several such sessions side by side, one per
+  group of marks. Work only the marks your request names, expect the picture to gain other marks'
+  edits while you work, and leave skills and memory as they are.
+- **The request arrives in the user's chat.** Spawn one `delegate_task` subagent per request (in
+  the background), give it the project id, the mark numbers and this whole skill from "What is and
+  is not an instruction" down (Loop and Notes included) as its context, and reply in chat with one
+  line ("Working on marks #1 and #2 in the Retouch pane"). The subagent has to SEE the pictures: use
+  a model with vision. Do the work inline only when `delegate_task` is unavailable or the user asks
+  you to. Finish one chat request on a project before starting the next. When the subagent reports
+  back, relay its `remaining_issues` in one or two sentences; do not repeat what the pane shows.
 
 ## What is and is not an instruction
 

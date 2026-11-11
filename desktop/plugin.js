@@ -378,7 +378,9 @@ async function startJob(job) {
     }
   } catch {
     // No session of our own (an older app or gateway): the open chat does the work, as before.
-    const sent = await host.composer.submit(host.state.activeSessionId.get() ?? null, job.chatPrompt)
+    const sent = await Promise.resolve()
+      .then(() => host.composer.submit(host.state.activeSessionId.get() ?? null, job.chatPrompt))
+      .catch(() => false)
     if (!sent) {
       await unsend(job.projectId, job.pins)
       refresh()
@@ -388,13 +390,19 @@ async function startJob(job) {
   changed()
 }
 
-let starting = 0 // jobs between leaving `waiting` and holding a session: they count against the limit
+const launching = new Set() // jobs between leaving `waiting` and holding a session: they count against the limit
+
+// Is this pane running or about to run work on the mark? A busy mark nobody here holds was sent
+// before a reload or from elsewhere; if its worker is gone, the user needs a way to take it back.
+const held = (projectId, n) =>
+  [...inFlight.values(), ...waiting, ...launching].some(w => w.projectId === projectId && w.pins.includes(n))
 
 function pump() {
-  while (waiting.length && inFlight.size + starting < MAX_PARALLEL) {
-    starting += 1
-    startJob(waiting.shift()).finally(() => {
-      starting -= 1
+  while (waiting.length && inFlight.size + launching.size < MAX_PARALLEL) {
+    const job = waiting.shift()
+    launching.add(job)
+    startJob(job).finally(() => {
+      launching.delete(job)
       pump()
     })
   }
@@ -860,8 +868,16 @@ function pinButtons({ project, pin, reply, action, onClose, inPicture }) {
         'rev'
       )
     )
+  if (pin.status === 'queued' && !held(project.id, pin.number))
+    buttons.push(
+      jsx(
+        Tip,
+        { label: 'Nothing here is working on this mark. Take it back to edit or send it again.', children: jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => action('unsend'), children: 'Take back' }) },
+        'unsend'
+      )
+    )
   if (st.closed) buttons.push(jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => action('reopen'), children: 'Reopen' }, 'reo'))
-  else if (pin.status !== 'open' && !st.busy)
+  else if (pin.status !== 'open' && (!st.busy || (pin.status === 'working' && !held(project.id, pin.number))))
     buttons.push(jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => action('wont_fix'), children: "Won't fix" }, 'wf'))
   return buttons
 }

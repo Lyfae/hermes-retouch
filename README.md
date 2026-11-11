@@ -16,7 +16,8 @@ review, and four agent tools Hermes uses to do the work.
   meet is a loop: the pane tints its inside, because Hermes may change everything inside it.
 - **One thread per mark.** Send the marks and Hermes works on them in hidden sessions of Retouch's
   own: nothing is typed into your chat. Marks that do not overlap are worked on side by side, up to
-  three at a time; a banner over the picture shows each one and the step it is on.
+  three at a time; a banner over the picture shows each one and the step it is on. The picker
+  beside Send chooses the model that does the work.
   Its replies, questions and your answers stay attached to the mark they are about.
 - **Edits stay inside the marks.** Every result is blended through the mark's mask and compared
   with the previous version. An edit that changes even one pixel outside its mark is refused and
@@ -81,8 +82,10 @@ routes are loaded once per gateway process.
    marked, edited or kept are deleted a day later, the next time you paste.
 2. Pick a tool from the toolbar: Select **V**, Pen **P**, Box **R**, Ellipse **E**, Lasso **L**,
    Note **T**. Draw on the image, choose an intent, write what you want, and press ⌘↩.
-3. Click **Send**. Hermes starts on your marks in Retouch's own hidden session; your chat is not
-   touched. (If the app cannot make that session, the request goes to your open chat instead.)
+3. Pick a model beside Send if you want one other than your default (it has to be able to see
+   pictures), and click **Send**. Hermes starts on your marks in Retouch's own hidden sessions;
+   your chat is not touched. (If the app cannot make such a session, the request goes to your open
+   chat instead.)
 4. Click a mark's number to see Hermes's reply, the result and any warnings. Accept it, or say what
    is still wrong and send it back. Step through the versions with **[** and **]**, hide the
    outlines with **H**, and press Esc to return to the current picture.
@@ -107,16 +110,26 @@ Only you close a mark. Hermes can mark it as working, ready for review, or a que
   `<HERMES_HOME>/plugin-data/retouch/`, separately for each Hermes profile.
 - **Your chat model sees the picture.** Every `retouch_get` sends a downscaled overview of the
   whole image plus a close-up of each mark to your chat model's provider, and every `retouch_edit`
-  sends a before/after strip. The work runs in a hidden Hermes session on your normal model; when
-  it falls back to your open chat it runs as a background subagent, and if you configured
-  delegation to use a different model or provider, the pictures go there too.
+  sends a before/after strip. If you pick another model beside Send, the pictures go to that
+  model's provider instead. When Send falls back to your open chat the work runs as a background
+  subagent, and if you configured delegation to use a different model or provider, the pictures go
+  there too.
+- **Send starts hidden Hermes sessions.** Each Send creates one session per group of marks (marks
+  that overlap share one), and up to three run at the same time, so a Send with several marks uses
+  several times the model usage of one. These are ordinary Hermes sessions with your usual tools
+  and settings; they are hidden from the session list and stay in your session history. If one
+  needs your approval for something, Hermes asks with its normal approval notification; Retouch
+  approves nothing for you. Like any Hermes session, one may end with Hermes's own review step
+  suggesting a memory or skill update.
 - `generate` additionally sends a crop of the area around the mark to Hermes's
   `image_generate` tool, which forwards it to the image provider you configured. Retouch then
   downloads the result: only over https, only from a public address, at most 40 MB. Your provider's
   own data retention applies; some providers return results at public URLs, so don't use `generate`
   on images you can't share with your provider.
-- Text inside a picture is treated as picture content. Hermes is told never to follow it, and the
-  tools cannot read or write outside the project: `from_file` reads only the project's `work`
+- Text inside a picture is treated as picture content. Hermes is told never to follow it, which
+  is an instruction and not a barrier: nobody reads a hidden session as it runs, so be as careful
+  with a picture of text you do not trust as you would be pasting that text into a chat. Retouch's
+  own tools cannot read or write outside the project: `from_file` reads only the project's `work`
   folder and exports go only to its `exports` folder.
 - Retouch never captures your screen and needs no Screen Recording permission. Screenshots come
   in through the clipboard: your system's own tool copies, you paste. The clipboard is read only
