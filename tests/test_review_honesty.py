@@ -117,3 +117,24 @@ def test_edit_tool_saves_a_review_image_the_agent_can_zoom_into(ws, plugin_tools
     review = Path(summary["review_image"])
     assert review.is_absolute() and review.is_file()
     assert Image.open(review).size[0] > Image.open(review).size[1]  # before and after, side by side
+
+
+def test_a_tool_answers_the_agent_even_when_something_unexpected_breaks(ws, plugin_tools, monkeypatch):
+    registered = {}
+
+    class Ctx:
+        def register_tool(self, **kw):
+            registered[kw["name"]] = kw["handler"]
+
+        def dispatch_tool(self, *_a, **_k):
+            return "{}"
+
+    plugin_tools.register(Ctx())
+
+    def locked(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked: /secret/path/data.db")
+
+    monkeypatch.setattr(ws, "projects", locked)
+    out = json.loads(registered["retouch_get"]({}))
+    assert out["success"] is False
+    assert "OperationalError" in out["error"] and "/secret/path" not in out["error"]

@@ -17,3 +17,6 @@ provides_tools:
   - retouch_reply
   - retouch_export
 provides_hooks: []
+# Hermes ships Pillow itself only on Python 3.14 and newer; on 3.11 to 3.13 this is what installs it.
+python_dependencies:
+  - "pillow>=12.3,<14"

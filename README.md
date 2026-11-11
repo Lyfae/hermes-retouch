@@ -48,6 +48,8 @@ review, and four agent tools Hermes uses to do the work.
 - For removals and replacements (`generate`): an image generation provider configured in Hermes.
   Tonal fixes and privacy edits work without one.
 - HEIC photos open when `pillow-heif` is installed (Hermes ships it on Python 3.14 and newer).
+- Pillow 12.3 to 13.x. Hermes ships it on Python 3.14 and newer; on older Pythons the plugin declares
+  it, and Hermes asks before installing it when you enable the plugin.
 
 ## Install
 

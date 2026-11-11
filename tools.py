@@ -3,12 +3,15 @@ should see pixels (non-vision models get ``text_summary`` instead; Hermes strips
 
 from __future__ import annotations
 
+import functools
 import json
+import logging
 from typing import Any
 
 from .retouch import geometry, ops as ops_mod, render, service, store
 
 TOOLSET = "retouch"
+logger = logging.getLogger(__name__)
 _ERRORS = (service.RetouchError, store.StoreError, geometry.GeometryError)
 
 HOW_TO_WORK = (
@@ -248,8 +251,24 @@ def handle_export(args: dict, **_kw) -> str:
     return _ok(path=str(path), media=f"MEDIA:{path}")
 
 
+def _guarded(handler):
+    """A tool answers the agent whatever happens inside it. Errors the code expects are turned into
+    messages where they occur; this catches the rest (a busy database, a full disk, a bug), logs
+    it, and tells the agent which kind it was without repeating paths or other detail."""
+    @functools.wraps(handler)
+    def call(args: dict, **kw):
+        try:
+            return handler(args if isinstance(args, dict) else {}, **kw)
+        except Exception as exc:  # noqa: BLE001 - the boundary between the plugin and the agent
+            logger.exception("retouch tool %s failed", getattr(handler, "__name__", "?"))
+            return _err(service.RetouchError(
+                f"Retouch hit an unexpected error ({type(exc).__name__}). Call retouch_get to see what the "
+                "project looks like now, then try again."))
+    return call
+
+
 def register(ctx) -> None:
     for schema, handler, emoji in ((GET, handle_get, "🖼️"), (EDIT, make_edit_handler(ctx), "🖌️"),
                                    (REPLY, handle_reply, "💬"), (EXPORT, handle_export, "💾")):
-        ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=handler,
+        ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=_guarded(handler),
                           description=schema["description"], emoji=emoji)
