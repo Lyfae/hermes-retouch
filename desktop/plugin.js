@@ -988,7 +988,7 @@ function PinBubble({ project, pin, onClose }) {
   const inPicture = where >= 0 && where <= at
   // The backend decides the same way (store._closable_as_is).
   const edited = path.slice(0, at + 1).some(v => v.pin === pin.number)
-  const closable = edited || (!pin.result_version && pin.thread.some(m => m.author === 'agent'))
+  const closable = edited || (!project.versions.some(v => v.pin === pin.number) && pin.thread.some(m => m.author === 'agent'))
   const buttons = pinButtons({ project, pin, reply, action, onClose, inPicture, closable })
 
   return jsxs('div', {

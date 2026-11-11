@@ -234,14 +234,14 @@ def _closable_as_is(conn, project_id: str, pin: sqlite3.Row) -> str | None:
     """An open mark may be accepted without another round when Hermes's work on it is still there:
     its edit is in the current picture (returned, so the mark points at it again: Revert followed
     by Redo leaves the edit in the picture and the mark pointing at nothing), or Hermes answered
-    and no edit was ever needed. Refused for a mark nobody worked on, or whose edit was undone."""
+    and never edited. Refused for a mark nobody worked on, or whose edits were all undone or reverted."""
     number = pin["number"]
     at = version(conn, project_id)
     while at is not None:
         if at["pin"] == number:
             return at["id"]
         at = version(conn, project_id, at["parent"]) if at["parent"] else None
-    if pin["result_version"]:
+    if conn.execute("SELECT 1 FROM versions WHERE project_id = ? AND pin = ? LIMIT 1", (project_id, number)).fetchone():
         raise StoreError(f"mark #{number}'s edit is not in the picture now; Redo brings it back")
     answered = conn.execute("SELECT 1 FROM messages WHERE project_id = ? AND pin = ? AND author = 'agent' LIMIT 1",
                             (project_id, number)).fetchone()
