@@ -599,10 +599,8 @@ function WorkingBanner({ project }) {
   return jsxs('div', {
     role: 'status',
     style: {
-      position: 'absolute',
-      top: 12,
-      left: '50%',
-      transform: 'translateX(-50%)',
+      pointerEvents: 'auto',
+      maxWidth: '100%',
       display: 'flex',
       flexDirection: 'column',
       gap: 4,
@@ -614,8 +612,7 @@ function WorkingBanner({ project }) {
       background: 'color-mix(in srgb, var(--ui-bg-elevated) 94%, transparent)',
       border: '1px solid var(--ui-accent)',
       boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
-      backdropFilter: 'blur(12px)',
-      zIndex: 3
+      backdropFilter: 'blur(12px)'
     },
     children: [
       lines.length > 1 &&
@@ -1502,11 +1499,22 @@ function versionLabel(v, i, at) {
   return i === at ? `${what} (current)` : i > at ? `${what} (undone; Redo brings it back)` : what
 }
 
-const stripStyle = {
+// The version strip and the working banner share the top of the picture: one column, strip first,
+// so neither can sit on the other. The column lets clicks through; its two children take them.
+const topStackStyle = {
   position: 'absolute',
-  left: '50%',
   top: 14,
-  transform: 'translateX(-50%)',
+  left: 14,
+  right: 14,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  gap: 8,
+  pointerEvents: 'none',
+  zIndex: 3
+}
+const stripStyle = {
+  pointerEvents: 'auto',
   display: 'flex',
   alignItems: 'center',
   gap: 2,
@@ -1515,8 +1523,7 @@ const stripStyle = {
   border: '1px solid var(--ui-stroke-secondary)',
   background: 'color-mix(in srgb, var(--ui-bg-elevated) 94%, transparent)',
   backdropFilter: 'blur(12px)',
-  zIndex: 2,
-  maxWidth: 'calc(100% - 28px)',
+  maxWidth: '100%',
   overflowX: 'auto'
 }
 const stripButton = { height: 24, padding: '0 8px', fontSize: 12, fontVariantNumeric: 'tabular-nums' }
@@ -1774,8 +1781,13 @@ function Workbench({ projectId, onOpened, onClose }) {
               },
               children: 'Draw on the image where something needs work'
             }),
-          jsx(WorkingBanner, { project }),
-          jsx(VersionStrip, { project, viewing, setViewing, clean, setClean, collapsed, setCollapsed }),
+          jsxs('div', {
+            style: topStackStyle,
+            children: [
+              jsx(VersionStrip, { project, viewing, setViewing, clean, setClean, collapsed, setCollapsed }, 'strip'),
+              jsx(WorkingBanner, { project }, 'work')
+            ]
+          }),
           jsx(Toolbar, { project, tool, setTool: chooseTool, shapeKind, setShapeKind, onClose })
         ]
       })
