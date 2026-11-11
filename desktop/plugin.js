@@ -368,8 +368,10 @@ async function startJob(job) {
       ...(choice ? { model: choice.model, provider: choice.provider } : {})
     })
     if (!made?.session_id) throw new Error('no session')
-    // Claim the slot before the prompt goes out: its first events can beat the reply.
+    // Claim the slot before the prompt goes out: its first events can beat the reply. From here
+    // the session holds the job, so it stops counting as one being started.
     inFlight.set(made.session_id, { projectId: job.projectId, pins: job.pins, step: '' })
+    launching.delete(job)
     try {
       await host.request('prompt.submit', { session_id: made.session_id, text: job.prompt })
     } catch (error) {
@@ -409,20 +411,25 @@ function pump() {
   changed()
 }
 
-// A session is finished when its turn ends, or (should that word never arrive) when the project
-// shows none of its marks busy any more. Either way its slot goes to the next job.
+// A session is finished when its turn ends, or when the project shows none of its marks busy any
+// more, whichever the pane learns first. Either way its slot goes to the next job.
 function finish(session) {
   if (inFlight.delete(session)) pump()
 }
 
+// Called with every refreshed project. A session's marks are queued before the session exists, so
+// a mark of its that is no longer busy is one it has handed back: the session lets go of it, and
+// of its slot once it holds none. Letting go here, mark by mark, and not only when the turn-ended
+// event arrives, matters: the user can send a mark back the moment the pane shows it, and the old
+// session must not still count as holding it (its late event would otherwise take the new request
+// for a mark it failed to finish).
 function settle(project) {
   for (const [session, flight] of inFlight) {
     if (flight.projectId !== project.id) continue
-    const busy = project.pins.some(p => flight.pins.includes(p.number) && statusOf(p.status).busy)
-    // `seen`: the marks were busy at least once, so "not busy" means done, not "not started yet".
-    if (busy) flight.seen = true
-    else if (flight.seen) finish(session)
+    flight.pins = flight.pins.filter(n => project.pins.some(p => p.number === n && statusOf(p.status).busy))
+    if (!flight.pins.length) finish(session)
   }
+  changed()
 }
 
 // Which model does the work: null means the profile's default. Kept per profile by the app.

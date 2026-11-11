@@ -143,12 +143,14 @@ Only you close a mark. Hermes can mark it as working, ready for review, or a que
 ```bash
 uv run --no-project --python 3.11 --with "pillow==12.3.0" --with pytest pytest tests -q   # unit tests, declared floor
 uv run --no-project --python 3.14 --with "pillow==13.0.0" --with pytest --with hypothesis pytest verify -q  # property checks
+node verify/pane_scheduler.mjs   # the pane's parallel Send queue
 hermes plugins validate .
 ```
 
-`verify/` holds Hypothesis checks of the two promises above (every pixel outside a mark untouched,
+`verify/` holds Hypothesis checks of the promises above (every pixel outside a mark untouched,
 for generated images and marks; the mark/version state machine honest under generated sequences
-of user and agent calls). `.hermes/skills/verify-retouch/SKILL.md` says when to run them and how
+of user and agent calls; edits made by several sessions at the same moment all land), and a
+random-schedule check of the pane's Send queue. `.hermes/skills/verify-retouch/SKILL.md` says when to run them and how
 to read a failure.
 
 The library lives in `retouch/` (geometry, compositing, operations, storage, the service), the
