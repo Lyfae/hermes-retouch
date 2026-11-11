@@ -431,7 +431,14 @@ async function stopWork(projectId, pins) {
   await unsend(projectId, [...marks])
   refresh()
   pump()
-  host.notify({ kind: 'info', message: `Retouch: stopped ${[...marks].sort((a, b) => a - b).map(n => `#${n}`).join(', ')}. Open again; edit the note or send when ready.` })
+  // Say what the project shows now, not what was asked for: a mark the backend would not reopen
+  // (a gateway still running an older Retouch refuses a mark Hermes had started on) is named.
+  const name = list => list.sort((a, b) => a - b).map(n => `#${n}`).join(', ')
+  const now = await rest(`/projects/${projectId}`).catch(() => null)
+  const stuck = now ? now.pins.filter(p => marks.has(p.number) && statusOf(p.status).busy).map(p => p.number) : []
+  if (stuck.length)
+    host.notify({ kind: 'warning', message: `Retouch: Hermes was stopped, but ${name(stuck)} could not be opened again. Use Take back on it; if that fails too, restart the Hermes gateway (it is running an older Retouch).` })
+  else host.notify({ kind: 'info', message: `Retouch: stopped ${name([...marks])}. Open again; edit the note or send when ready.` })
 }
 
 function pump() {
@@ -941,7 +948,7 @@ function pinButtons({ project, pin, reply, action, onClose, inPicture }) {
         'stop'
       )
     )
-  if (pin.status === 'queued' && !held(project.id, pin.number))
+  if (st.busy && !held(project.id, pin.number))
     buttons.push(
       jsx(
         Tip,
