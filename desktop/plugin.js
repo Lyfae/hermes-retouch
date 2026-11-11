@@ -902,6 +902,16 @@ function pinButtons({ project, pin, reply, action, onClose, inPicture }) {
       jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => act(() => rest(base, { method: 'DELETE' })).then(onClose), children: 'Delete' }, 'del'),
       jsx(Button, { size: 'xs', onClick: () => sendToAgent(project, [pin.number]), children: `Send #${pin.number}` }, 'send')
     )
+  // Opened again by mistake (Reopen, Needs more work, Stop): the edit is still in the picture, so
+  // it can be accepted as it is without sending it round again.
+  if (pin.status === 'open' && pin.result_version && inPicture)
+    buttons.push(
+      jsx(
+        Tip,
+        { label: 'Keep the edit this mark already has and close it', children: jsx(Button, { size: 'xs', variant: 'secondary', onClick: () => action('accept', reply), children: 'Accept as is' }) },
+        'acc-open'
+      )
+    )
   if (pin.status === 'needs_review' || pin.status === 'question') {
     const answering = pin.status === 'question'
     // Accepting an edit that Undo took out of the picture would close the mark on nothing.

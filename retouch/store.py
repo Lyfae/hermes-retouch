@@ -49,7 +49,8 @@ USER_ACTIONS = {
     "send": ({"open"}, "queued"),
     # the user takes a sent mark back: nothing could start on it, or they pressed Stop
     "unsend": ({"queued", "working"}, "open"),
-    "accept": ({"needs_review", "working", "question", "queued"}, "resolved"),
+    # from open: only a mark that already has an edit (reopened or stopped by mistake)
+    "accept": ({"needs_review", "working", "question", "queued", "open"}, "resolved"),
     "more_work": ({"needs_review", "question", "resolved"}, "open"),
     "wont_fix": (set(STATUSES) - {"wont_fix"}, "wont_fix"),
     "reopen": ({"resolved", "wont_fix"}, "open"),
@@ -215,6 +216,8 @@ def user_action(conn, project_id: str, number: int, action: str, message: str = 
     pin = require_pin(conn, project_id, number)
     if pin["status"] not in allowed_from:
         raise StoreError(f"cannot {action.replace('_', ' ')} mark #{number} while it is {pin['status']}")
+    if action == "accept" and pin["status"] == "open" and not pin["result_version"]:
+        raise StoreError(f"mark #{number} has no edit to accept yet")
     bump = 1 if action == "more_work" else 0
     with conn:
         conn.execute("UPDATE pins SET status = ?, round = round + ? WHERE project_id = ? AND number = ?",

@@ -199,3 +199,16 @@ def test_stopping_takes_back_a_mark_hermes_is_working_on_but_not_a_finished_one(
         store.agent_set_status(conn, proj["id"], n, "needs_review")
     with pytest.raises(store.StoreError):
         ws.user_action(proj["id"], n, "unsend")  # the result is there to review; Stop must not hide it
+
+
+def test_a_mark_opened_again_by_mistake_can_be_accepted_as_it_is(ws, proj):
+    n = mark(ws, proj)["number"]
+    with pytest.raises(store.StoreError):
+        ws.user_action(proj["id"], n, "accept")  # nothing has been done on it yet
+    ws.send(proj["id"], [n])
+    ws.edit(proj["id"], n, method="adjust", ops=[{"op": "exposure", "value": 1}])
+    with ws.db() as conn:
+        store.agent_set_status(conn, proj["id"], n, "needs_review")
+    ws.user_action(proj["id"], n, "accept")
+    assert ws.user_action(proj["id"], n, "reopen")["status"] == "open"  # the misclick
+    assert ws.user_action(proj["id"], n, "accept")["status"] == "resolved"
