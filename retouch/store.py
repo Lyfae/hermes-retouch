@@ -47,7 +47,8 @@ MAX_VERSIONS = 500
 # user action -> (allowed from, resulting status)
 USER_ACTIONS = {
     "send": ({"open"}, "queued"),
-    "unsend": ({"queued"}, "open"),  # the pane queued a mark but had no chat to send it to
+    # the user takes a sent mark back: nothing could start on it, or they pressed Stop
+    "unsend": ({"queued", "working"}, "open"),
     "accept": ({"needs_review", "working", "question", "queued"}, "resolved"),
     "more_work": ({"needs_review", "question", "resolved"}, "open"),
     "wont_fix": (set(STATUSES) - {"wont_fix"}, "wont_fix"),

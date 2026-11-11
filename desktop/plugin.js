@@ -335,7 +335,7 @@ async function fromClipboard(button, onOpened) {
 // the rest wait their turn. Marks that overlap share one session, because their edits touch the
 // same pixels and have to happen in order.
 const MAX_PARALLEL = 3
-const inFlight = new Map() // session id -> { projectId, pins: [numbers], step }
+const inFlight = new Map() // session id -> { projectId, pins: [numbers], step, job }
 const waiting = [] // jobs not started yet: { projectId, title, pins, prompt, chatPrompt }
 const watchers = new Set()
 const changed = () => watchers.forEach(w => w())
@@ -368,17 +368,22 @@ async function startJob(job) {
       ...(choice ? { model: choice.model, provider: choice.provider } : {})
     })
     if (!made?.session_id) throw new Error('no session')
+    if (job.stopped) return // the user pressed Stop while the session was being made
     // Claim the slot before the prompt goes out: its first events can beat the reply. From here
     // the session holds the job, so it stops counting as one being started.
-    inFlight.set(made.session_id, { projectId: job.projectId, pins: job.pins, step: '' })
+    inFlight.set(made.session_id, { projectId: job.projectId, pins: job.pins, step: '', job })
     launching.delete(job)
     try {
       await host.request('prompt.submit', { session_id: made.session_id, text: job.prompt })
+      // Stopped while the prompt was on its way: the interrupt may have arrived before the turn
+      // existed, so stop the turn that has now started.
+      if (!inFlight.has(made.session_id)) interrupt(made.session_id)
     } catch (error) {
       inFlight.delete(made.session_id)
       throw error
     }
   } catch {
+    if (job.stopped) return
     // No session of our own (an older app or gateway): the open chat does the work, as before.
     const sent = await Promise.resolve()
       .then(() => host.composer.submit(host.state.activeSessionId.get() ?? null, job.chatPrompt))
@@ -398,6 +403,36 @@ const launching = new Set() // jobs between leaving `waiting` and holding a sess
 // before a reload or from elsewhere; if its worker is gone, the user needs a way to take it back.
 const held = (projectId, n) =>
   [...inFlight.values(), ...waiting, ...launching].some(w => w.projectId === projectId && w.pins.includes(n))
+
+const interrupt = session => Promise.resolve().then(() => host.request('session.interrupt', { session_id: session })).catch(() => null)
+
+// Stop: the user takes back the given marks and everything sent in the same piece of work (marks
+// that overlap share a session). Work not started is dropped, a running session is interrupted,
+// and the marks are open again. An edit Hermes had already saved stays as a version; Undo removes it.
+async function stopWork(projectId, pins) {
+  const hit = w => w.projectId === projectId && w.pins.some(n => pins.includes(n))
+  const marks = new Set()
+  for (let i = waiting.length - 1; i >= 0; i--) if (hit(waiting[i])) waiting.splice(i, 1)[0].pins.forEach(n => marks.add(n))
+  for (const job of [...launching]) {
+    if (!hit(job)) continue
+    job.stopped = true
+    launching.delete(job)
+    job.pins.forEach(n => marks.add(n))
+  }
+  for (const [session, flight] of [...inFlight]) {
+    if (!hit(flight)) continue
+    inFlight.delete(session) // its late turn-ended event now finds nothing to report
+    flight.job.stopped = true // and a prompt that fails after this must not fall back to the chat
+    interrupt(session)
+    flight.pins.forEach(n => marks.add(n))
+  }
+  if (!marks.size) return
+  changed()
+  await unsend(projectId, [...marks])
+  refresh()
+  pump()
+  host.notify({ kind: 'info', message: `Retouch: stopped ${[...marks].sort((a, b) => a - b).map(n => `#${n}`).join(', ')}. Open again; edit the note or send when ready.` })
+}
 
 function pump() {
   while (waiting.length && inFlight.size + launching.size < MAX_PARALLEL) {
@@ -424,10 +459,22 @@ function finish(session) {
 // session must not still count as holding it (its late event would otherwise take the new request
 // for a mark it failed to finish).
 function settle(project) {
+  const busy = n => project.pins.some(p => p.number === n && statusOf(p.status).busy)
   for (const [session, flight] of inFlight) {
     if (flight.projectId !== project.id) continue
-    flight.pins = flight.pins.filter(n => project.pins.some(p => p.number === n && statusOf(p.status).busy))
+    flight.pins = flight.pins.filter(busy)
     if (!flight.pins.length) finish(session)
+  }
+  // The same for work not started yet: a mark that stopped being busy while its job waited (a
+  // stopped session's last reply can land on a mark the user has already sent again) is no longer
+  // that job's, and a job left with no marks never starts.
+  for (const job of [...waiting, ...launching]) {
+    if (job.projectId !== project.id) continue
+    job.pins = job.pins.filter(busy)
+    if (job.pins.length) continue
+    job.stopped = true
+    launching.delete(job)
+    if (waiting.includes(job)) waiting.splice(waiting.indexOf(job), 1)
   }
   changed()
 }
@@ -530,10 +577,13 @@ function workLines(project) {
   const lines = []
   const take = (pins, text, active) => {
     const mine = pins.filter(n => busy.delete(n))
-    if (mine.length) lines.push({ marks: mine.map(n => `#${n}`).join(', '), text, active })
+    if (mine.length) lines.push({ marks: mine.map(n => `#${n}`).join(', '), text, active, pins: stoppable ? mine : null })
   }
+  let stoppable = true // work this pane started can be stopped from here
   for (const flight of inFlight.values()) if (flight.projectId === project.id) take(flight.pins, flight.step || 'starting', true)
+  for (const job of launching) if (job.projectId === project.id) take(job.pins, 'starting', true)
   for (const job of waiting) if (job.projectId === project.id) take(job.pins, 'waiting for a free slot', false)
+  stoppable = false
   for (const n of [...busy]) take([n], project.pins.find(p => p.number === n).status === 'working' ? 'working' : 'sent', true)
   return lines
 }
@@ -565,19 +615,30 @@ function WorkingBanner({ project }) {
       border: '1px solid var(--ui-accent)',
       boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
       backdropFilter: 'blur(12px)',
-      pointerEvents: 'none',
       zIndex: 3
     },
     children: [
       lines.length > 1 &&
-        jsx('div', { style: { fontSize: 11, color: 'var(--ui-text-tertiary)' }, children: `Hermes is working on ${lines.length} things` }, 'head'),
+        jsxs('div', {
+          style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--ui-text-tertiary)' },
+          children: [
+            jsx('span', { style: { flex: 1 }, children: `Hermes is working on ${lines.length} things` }),
+            lines.some(l => l.pins) &&
+              jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => stopWork(project.id, lines.flatMap(l => l.pins || [])), children: 'Stop all' })
+          ]
+        }, 'head'),
       ...lines.map(line =>
         jsxs('div', {
           style: { display: 'flex', alignItems: 'center', gap: 8, opacity: line.active ? 1 : 0.6 },
           children: [
             line.active ? jsx(GlyphSpinner, { ariaLabel: 'Working' }) : jsx('span', { style: { width: 14, textAlign: 'center' }, children: '·' }),
             jsx('span', { style: { fontWeight: 500 }, children: lines.length > 1 ? line.marks : `Hermes is working on ${line.marks}` }),
-            jsx('span', { style: { color: 'var(--ui-text-tertiary)' }, children: line.text })
+            jsx('span', { style: { flex: 1, color: 'var(--ui-text-tertiary)' }, children: line.text }),
+            line.pins &&
+              jsx(Tip, {
+                label: 'Stop this and open the marks again',
+                children: jsx(Button, { size: 'xs', variant: 'ghost', 'aria-label': `Stop ${line.marks}`, onClick: () => stopWork(project.id, line.pins), children: 'Stop' })
+              })
           ]
         }, line.marks)
       )
@@ -873,6 +934,14 @@ function pinButtons({ project, pin, reply, action, onClose, inPicture }) {
           children: 'Revert'
         },
         'rev'
+      )
+    )
+  if (st.busy && held(project.id, pin.number))
+    buttons.push(
+      jsx(
+        Tip,
+        { label: 'Stop Hermes on this mark (and any overlapping mark sent with it) and open it again', children: jsx(Button, { size: 'xs', variant: 'secondary', onClick: () => stopWork(project.id, [pin.number]), children: 'Stop' }) },
+        'stop'
       )
     )
   if (pin.status === 'queued' && !held(project.id, pin.number))

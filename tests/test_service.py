@@ -185,4 +185,17 @@ def test_a_queued_mark_can_be_put_back_when_there_was_no_chat_to_send_it_to(ws, 
     ws.send(proj["id"], [n])
     assert ws.user_action(proj["id"], n, "unsend")["status"] == "open"
     with pytest.raises(store.StoreError):
-        ws.user_action(proj["id"], n, "unsend")  # only a queued mark can be taken back
+        ws.user_action(proj["id"], n, "unsend")  # an open mark was never sent
+
+
+def test_stopping_takes_back_a_mark_hermes_is_working_on_but_not_a_finished_one(ws, proj):
+    n = mark(ws, proj)["number"]
+    ws.send(proj["id"], [n])
+    with ws.db() as conn:
+        store.agent_set_status(conn, proj["id"], n, "working")
+    assert ws.user_action(proj["id"], n, "unsend")["status"] == "open"
+    ws.send(proj["id"], [n])
+    with ws.db() as conn:
+        store.agent_set_status(conn, proj["id"], n, "needs_review")
+    with pytest.raises(store.StoreError):
+        ws.user_action(proj["id"], n, "unsend")  # the result is there to review; Stop must not hide it

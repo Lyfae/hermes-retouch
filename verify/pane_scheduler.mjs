@@ -7,6 +7,7 @@
 //   S1  never more than MAX_PARALLEL sessions running or being started
 //   S2  a mark is never held by two pieces of work at once
 //   S3  marks that overlap and were sent together are in the same piece of work
+//   S5  after Stop, nothing here holds the stopped marks and none of them is still sent or working
 // and once everything has been delivered:
 //   S4  nothing is left waiting, starting or running, and no mark is still "sent" with nobody on it
 //
@@ -78,7 +79,7 @@ async function run(seed) {
     const act = url.match(/\/pins\/(\d+)\/action$/)
     if (act) {
       const p = pin(Number(act[1]))
-      if (p.status !== 'queued') throw new Error('409')
+      if (p.status !== 'queued' && p.status !== 'working') throw new Error('409')
       p.status = 'open'
       return p
     }
@@ -114,7 +115,7 @@ async function run(seed) {
       }
     }
   }
-  const api = new Function(...Object.keys(env), `${CODE}\nreturn { sendToAgent, settle, ownTurnEnded, inFlight, waiting, launching, MAX_PARALLEL }`)(...Object.values(env))
+  const api = new Function(...Object.keys(env), `${CODE}\nreturn { sendToAgent, settle, ownTurnEnded, stopWork, held, inFlight, waiting, launching, MAX_PARALLEL }`)(...Object.values(env))
 
   const work = () => [...api.inFlight.values(), ...api.waiting, ...api.launching]
   const check = step => {
@@ -132,6 +133,12 @@ async function run(seed) {
     log.push(`${call.method} ${ok ? 'answered' : 'failed'}`)
     if (!ok) return call.reject(new Error('gateway said no'))
     if (call.method === 'session.create') return call.resolve({ session_id: `s${++made}` })
+    if (call.method === 'session.interrupt') {
+      // the turn, if one is running, ends and says so
+      const at = live.findIndex(s => s.session === call.params.session_id)
+      if (at >= 0) live.splice(at, 1), events.push({ type: 'message.complete', session_id: call.params.session_id, payload: {} })
+      return call.resolve({ status: 'interrupted' })
+    }
     live.push({ session: call.params.session_id, pins: [...(api.inFlight.get(call.params.session_id)?.pins || [])] })
     call.resolve({})
   }
@@ -175,7 +182,19 @@ async function run(seed) {
     else if (r < 0.66) agent(pick(['finishes', 'finishes', 'errors', 'stops half way']))
     else if (r < 0.8) await deliver()
     else if (r < 0.9) (log.push('refresh'), api.settle(snapshot()))
-    else if (r < 0.95) (log.push('stray event'), await api.ownTurnEnded({ type: 'message.complete', session_id: 'someone-else', payload: {} }))
+    else if (r < 0.93) {
+      // Stop on a busy mark this pane holds; overlapping marks sent with it stop too
+      const mine = pins.filter(p => BUSY.has(p.status) && api.held('p', p.number))
+      if (mine.length) {
+        const n = pick(mine).number
+        const group = work().find(w => w.pins.includes(n)).pins.slice()
+        log.push(`user stops #${n} (work on ${group.map(x => `#${x}`).join(',')})`)
+        await api.stopWork('p', [n])
+        for (const g of group)
+          if (api.held('p', g) || BUSY.has(pin(g).status))
+            throw new Error(`S5: mark #${g} was stopped but is still ${api.held('p', g) ? 'held by work here' : pin(g).status}\n  seed ${seed}:\n    ${log.slice(-14).join('\n    ')}`)
+      }
+    } else if (r < 0.96) (log.push('stray event'), await api.ownTurnEnded({ type: 'message.complete', session_id: 'someone-else', payload: {} }))
     else {
       // The user sends a mark back from what the pane shows, and the pane shows a status only
       // after a refresh, so a refresh always comes first (Workbench's effect calls settle).
@@ -204,4 +223,4 @@ async function run(seed) {
 
 let sessions = 0
 for (let seed = 1; seed <= RUNS; seed++) sessions += (await run(seed)).made
-console.log(`pane scheduler: ${RUNS} random schedules, ${sessions} sessions started, S1–S4 held`)
+console.log(`pane scheduler: ${RUNS} random schedules, ${sessions} sessions started, S1–S5 held`)

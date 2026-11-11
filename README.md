@@ -88,6 +88,9 @@ routes are loaded once per gateway process.
    pictures), and click **Send**. Hermes starts on your marks in Retouch's own hidden sessions;
    your chat is not touched. (If the app cannot make such a session, the request goes to your open
    chat instead.)
+   **Stop** in the banner over the picture, or in a mark's bubble, takes sent marks back: work
+   that has not started is dropped, a running session is interrupted, and the marks are open again.
+   An edit Hermes had already saved stays as a version; Undo removes it.
 4. Click a mark's number to see Hermes's reply, the result and any warnings. Accept it, or say what
    is still wrong and send it back. Step through the versions with **[** and **]**, hide the
    outlines with **H**, and press Esc to return to the current picture.

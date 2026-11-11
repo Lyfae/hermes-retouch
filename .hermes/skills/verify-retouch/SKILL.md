@@ -45,7 +45,7 @@ cut out of `desktop/plugin.js`. No model of the code exists separately from the 
 | `retouch/store.py` (`USER_ACTIONS`, `AGENT_SETS`, `CLOSED`, `add_pin`, `add_version`, `revert`, `redo`, `redo_target`, `agent_set_status`, `user_action`, `update_pin`) | `verify/test_state_machine.py` | a new status or action: add it to the rules AND decide which promise it must keep (see "Updating the model") |
 | `retouch/service.py` (`edit`, `_apply_and_save`, `update_pin`, `send`, `revert`, `redo`, `reply`) | `verify/test_state_machine.py` | same |
 | `service._apply_and_save` (the retry loop, the unlink on conflict), `service.edit` (status restore), `store.add_version` (`expected_parent`, the `result_version` update), `service.load` | `verify/test_parallel_edits.py` | changing the number of attempts changes P14 and the "worst schedule" count: update `Staged.stage` and the last two assertions together |
-| `desktop/plugin.js`: `overlapGroups`, `startJob`, `pump`, `finish`, `settle`, `held`, `ownTurnEnded`, `sendToAgent`, `MAX_PARALLEL`, `inFlight` / `waiting` / `launching` | `node verify/pane_scheduler.mjs` | if it says it cannot find the scheduler, the code moved: update the four `cut(...)` points at the top of the script, nothing else |
+| `desktop/plugin.js`: `overlapGroups`, `startJob`, `pump`, `finish`, `settle`, `held`, `stopWork`, `ownTurnEnded`, `sendToAgent`, `MAX_PARALLEL`, `inFlight` / `waiting` / `launching` | `node verify/pane_scheduler.mjs` | if it says it cannot find the scheduler, the code moved: update the four `cut(...)` points at the top of the script, nothing else |
 
 ## Run
 
@@ -103,7 +103,7 @@ threads race, so a failure there may not repeat; re-run it, and trust a `staged=
 first. The assertion message says which promise broke in plain words ("changed N pixels outside
 its mark (another mark's work)" is a lost edit).
 
-For the pane check, the failure prints the promise (S1–S4), the seed, and the last steps in order
+For the pane check, the failure prints the promise (S1–S5), the seed, and the last steps in order
 ("Send #1,#5", "session.create failed", "agent in s2 finishes on #3", "event error for s1",
 "refresh"). Read them as what the user, the gateway and the agents did. Before calling it a bug,
 check the step order is one the pane allows: the user acts only on what a refresh has shown, and a
@@ -163,6 +163,10 @@ For the pane, break a COPY and point the script at it (`cp desktop/plugin.js /tm
 - S3: in `overlapGroups`, replace the `hit` filter with `[]`.
 - S4 (queue stalls): in `finish`, do not call `pump()`.
 - S4 (mark left "Sent"): in `startJob`, drop the `unsend` after a failed fallback.
+- S5 (Stop lets go): in `stopWork`, do not splice the job out of `waiting`, or do not delete the
+  session from `inFlight`.
+- S2 (after Stop): in `stopWork`, drop `flight.job.stopped = true`; or in `settle`, do not filter
+  the pins of waiting jobs.
 
 ## Scope and bounds
 
@@ -195,7 +199,7 @@ clipboard, model picker, banner, version strip); HEIC/EXIF handling (`tests/`).
 |---|---|
 | `verify/test_region_property.py` | `composite.apply_in_region`, `composite.blend_full`, `composite.inward_soft_mask`, `composite.outside_changed_px`, `geometry.build_mask`, `ops.run_ops` |
 | `verify/test_parallel_edits.py` | `service.edit`, `service._apply_and_save`, `service.load`, `service.mask`, `store.add_version`, `store.restore_status`, `composite.outside_changed_px` |
-| `verify/pane_scheduler.mjs` | `desktop/plugin.js`: `bounds`, `overlapGroups`, `startJob`, `pump`, `finish`, `settle`, `held`, `ownTurnEnded`, `sendToAgent` |
+| `verify/pane_scheduler.mjs` | `desktop/plugin.js`: `bounds`, `overlapGroups`, `startJob`, `pump`, `finish`, `settle`, `held`, `stopWork`, `ownTurnEnded`, `sendToAgent` |
 | `verify/test_state_machine.py` | `store.USER_ACTIONS/AGENT_SETS/CLOSED`, `store.add_pin`, `store.add_version`, `store.revert`, `store.redo`, `store.redo_target`, `store.agent_set_status`, `store.user_action`, `store.update_pin`, `service.edit`, `service._apply_and_save`, `service.update_pin`, `service.send`, `service.revert`, `service.redo`, `service.reply` |
 
 The sync point is the last commit that touched `verify/`:
