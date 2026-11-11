@@ -49,7 +49,7 @@ USER_ACTIONS = {
     "send": ({"open"}, "queued"),
     # the user takes a sent mark back: nothing could start on it, or they pressed Stop
     "unsend": ({"queued", "working"}, "open"),
-    # from open: only a mark that already has an edit (reopened or stopped by mistake)
+    # from open: only a mark Hermes has already edited or answered (see _closable_as_is)
     "accept": ({"needs_review", "working", "question", "queued", "open"}, "resolved"),
     "more_work": ({"needs_review", "question", "resolved"}, "open"),
     "wont_fix": (set(STATUSES) - {"wont_fix"}, "wont_fix"),
@@ -216,16 +216,38 @@ def user_action(conn, project_id: str, number: int, action: str, message: str = 
     pin = require_pin(conn, project_id, number)
     if pin["status"] not in allowed_from:
         raise StoreError(f"cannot {action.replace('_', ' ')} mark #{number} while it is {pin['status']}")
-    if action == "accept" and pin["status"] == "open" and not pin["result_version"]:
-        raise StoreError(f"mark #{number} has no edit to accept yet")
+    link = _closable_as_is(conn, project_id, pin) if action == "accept" and pin["status"] == "open" else None
     bump = 1 if action == "more_work" else 0
     with conn:
+        if link:
+            conn.execute("UPDATE pins SET result_version = ? WHERE project_id = ? AND number = ?",
+                         (link, project_id, int(number)))
         conn.execute("UPDATE pins SET status = ?, round = round + ? WHERE project_id = ? AND number = ?",
                      (to, bump, project_id, int(number)))
         if message.strip():
             _add_message(conn, project_id, number, "user", message.strip(), None)
         _touch(conn, project_id)
     return pin_dict(conn, require_pin(conn, project_id, number))
+
+
+def _closable_as_is(conn, project_id: str, pin: sqlite3.Row) -> str | None:
+    """An open mark may be accepted without another round when Hermes's work on it is still there:
+    its edit is in the current picture (returned, so the mark points at it again: Revert followed
+    by Redo leaves the edit in the picture and the mark pointing at nothing), or Hermes answered
+    and no edit was ever needed. Refused for a mark nobody worked on, or whose edit was undone."""
+    number = pin["number"]
+    at = version(conn, project_id)
+    while at is not None:
+        if at["pin"] == number:
+            return at["id"]
+        at = version(conn, project_id, at["parent"]) if at["parent"] else None
+    if pin["result_version"]:
+        raise StoreError(f"mark #{number}'s edit is not in the picture now; Redo brings it back")
+    answered = conn.execute("SELECT 1 FROM messages WHERE project_id = ? AND pin = ? AND author = 'agent' LIMIT 1",
+                            (project_id, number)).fetchone()
+    if not answered:
+        raise StoreError(f"Hermes has not worked on mark #{number} yet: send it, or delete it")
+    return None
 
 
 def _add_message(conn, project_id, number, author, body, version_id, issues=""):

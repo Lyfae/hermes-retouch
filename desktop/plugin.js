@@ -893,7 +893,7 @@ function Message({ m }) {
   })
 }
 
-function pinButtons({ project, pin, reply, action, onClose, inPicture }) {
+function pinButtons({ project, pin, reply, action, onClose, inPicture, closable }) {
   const st = statusOf(pin.status)
   const base = `/projects/${project.id}/pins/${pin.number}`
   const buttons = []
@@ -902,13 +902,14 @@ function pinButtons({ project, pin, reply, action, onClose, inPicture }) {
       jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => act(() => rest(base, { method: 'DELETE' })).then(onClose), children: 'Delete' }, 'del'),
       jsx(Button, { size: 'xs', onClick: () => sendToAgent(project, [pin.number]), children: `Send #${pin.number}` }, 'send')
     )
-  // Opened again by mistake (Reopen, Needs more work, Stop): the edit is still in the picture, so
-  // it can be accepted as it is without sending it round again.
-  if (pin.status === 'open' && pin.result_version && inPicture)
+  // Opened again by mistake (Reopen, Needs more work, Stop, Revert then Redo), or simply good
+  // enough: Hermes's edit is in the picture, or it answered and nothing needed changing, so the
+  // mark can be closed as it is without another round.
+  if (pin.status === 'open' && closable)
     buttons.push(
       jsx(
         Tip,
-        { label: 'Keep the edit this mark already has and close it', children: jsx(Button, { size: 'xs', variant: 'secondary', onClick: () => action('accept', reply), children: 'Accept as is' }) },
+        { label: 'Close this mark as it is: nothing is sent and nothing changes', children: jsx(Button, { size: 'xs', variant: 'secondary', onClick: () => action('accept', reply), children: 'Accept as is' }) },
         'acc-open'
       )
     )
@@ -985,7 +986,10 @@ function PinBubble({ project, pin, onClose }) {
   const { path, at } = versionPath(project)
   const where = pin.result_version ? path.findIndex(v => v.id === pin.result_version) : 0
   const inPicture = where >= 0 && where <= at
-  const buttons = pinButtons({ project, pin, reply, action, onClose, inPicture })
+  // The backend decides the same way (store._closable_as_is).
+  const edited = path.slice(0, at + 1).some(v => v.pin === pin.number)
+  const closable = edited || (!pin.result_version && pin.thread.some(m => m.author === 'agent'))
+  const buttons = pinButtons({ project, pin, reply, action, onClose, inPicture, closable })
 
   return jsxs('div', {
     style: { display: 'flex', flexDirection: 'column', gap: 8 },

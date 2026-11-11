@@ -206,9 +206,32 @@ def test_a_mark_opened_again_by_mistake_can_be_accepted_as_it_is(ws, proj):
     with pytest.raises(store.StoreError):
         ws.user_action(proj["id"], n, "accept")  # nothing has been done on it yet
     ws.send(proj["id"], [n])
-    ws.edit(proj["id"], n, method="adjust", ops=[{"op": "exposure", "value": 1}])
+    edit = ws.edit(proj["id"], n, method="adjust", ops=[{"op": "exposure", "value": 1}])
     with ws.db() as conn:
         store.agent_set_status(conn, proj["id"], n, "needs_review")
     ws.user_action(proj["id"], n, "accept")
     assert ws.user_action(proj["id"], n, "reopen")["status"] == "open"  # the misclick
+    assert ws.user_action(proj["id"], n, "accept")["status"] == "resolved"
+
+    # Revert by mistake, then Redo: the edit is back in the picture and the mark points at nothing.
+    ws.user_action(proj["id"], n, "reopen")
+    ws.revert(proj["id"], pin=n)
+    with pytest.raises(store.StoreError):
+        ws.user_action(proj["id"], n, "accept")  # the edit is out of the picture
+    current = ws.redo(proj["id"])["current_version"]
+    done = ws.user_action(proj["id"], n, "accept")
+    assert done["status"] == "resolved" and done["result_version"] == current
+
+    # Undo in the header takes the edit out and leaves the mark pointing at it: nothing to accept.
+    ws.user_action(proj["id"], n, "reopen")
+    ws.revert(proj["id"])
+    with pytest.raises(store.StoreError):
+        ws.user_action(proj["id"], n, "accept")
+
+
+def test_a_mark_hermes_only_answered_can_be_closed_without_an_edit(ws, proj):
+    n = mark(ws, proj, intent="ask")["number"]
+    ws.send(proj["id"], [n])
+    ws.reply(proj["id"], n, "It is the tab title.", status="question")
+    ws.user_action(proj["id"], n, "more_work", "ok")
     assert ws.user_action(proj["id"], n, "accept")["status"] == "resolved"
